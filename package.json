@@ -1,6 +1,6 @@
 {
   "name": "quicklunch-web-module",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "private": true,
   "description": "Modulo web formal de QuickLunch: admin, restaurantes y usuario movil.",
   "scripts": {

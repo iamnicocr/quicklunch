@@ -201,6 +201,9 @@ export async function initDb() {
       description TEXT,
       cost INTEGER DEFAULT 0,
       price INTEGER DEFAULT 0,
+      stock INTEGER DEFAULT 0,
+      is_special INTEGER DEFAULT 0,
+      additional_cost INTEGER DEFAULT 0,
       active INTEGER DEFAULT 1,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
@@ -244,6 +247,16 @@ export async function initDb() {
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
   `);
+
+
+
+  function ensureColumn(db, table, column, definition) {
+    const existing = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+    if (!existing.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+  ensureColumn(restaurantsDb, 'inventory_items', 'stock', 'INTEGER DEFAULT 0');
+  ensureColumn(restaurantsDb, 'inventory_items', 'is_special', 'INTEGER DEFAULT 0');
+  ensureColumn(restaurantsDb, 'inventory_items', 'additional_cost', 'INTEGER DEFAULT 0');
 
   coreDb.exec(`
     CREATE TABLE IF NOT EXISTS orders (

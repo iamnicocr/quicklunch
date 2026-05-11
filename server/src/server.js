@@ -151,14 +151,15 @@ app.get('/api/restaurants/:id/slots', (req, res) => {
 
 app.post('/api/orders', auth(['customer','admin']), (req, res) => {
   const schema = z.object({
-    restaurant_id: z.number(), menu_id: z.number().optional().nullable(), pickup_date: z.string(), pickup_time: z.string(), payment_method: z.enum(['online','cash']), items: z.array(z.any()).min(1), notes: z.string().optional(), coupon_code: z.string().optional()
+    restaurant_id: z.number(), menu_id: z.number().optional().nullable(), pickup_date: z.string(), pickup_time: z.string(), payment_method: z.enum(['online','cash']), items: z.array(z.any()).min(1), subtotal: z.number().optional(), notes: z.string().optional(), coupon_code: z.string().optional()
   });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ message: 'Pedido incompleto.' });
   const data = parsed.data;
   const restaurant = restaurantsDb.prepare('SELECT * FROM restaurants WHERE id = ?').get(data.restaurant_id);
   if (!restaurant) return res.status(404).json({ message: 'Restaurante no encontrado.' });
-  const subtotal = data.items.reduce((sum, item) => sum + Number(item.price || item.price_delta || 0), 0) || 12000;
+  const computedSubtotal = data.items.reduce((sum, item) => sum + Number(item.price || item.price_delta || 0), 0);
+  const subtotal = Number(data.subtotal || 0) > 0 ? Number(data.subtotal) : (computedSubtotal || 15000);
   let discount = 0;
   if (data.coupon_code) {
     const coupon = restaurantsDb.prepare('SELECT * FROM coupons WHERE code = ? AND active = 1').get(data.coupon_code.toUpperCase());
@@ -177,6 +178,9 @@ app.post('/api/orders', auth(['customer','admin']), (req, res) => {
   const existingSlot = coreDb.prepare('SELECT * FROM pickup_slots WHERE restaurant_id = ? AND slot_time = ?').get(data.restaurant_id, pickup_slot);
   if (existingSlot) coreDb.prepare('UPDATE pickup_slots SET reserved = reserved + 1 WHERE id = ?').run(existingSlot.id);
   else coreDb.prepare('INSERT INTO pickup_slots (restaurant_id, slot_time, capacity, reserved) VALUES (?, ?, 10, 1)').run(data.restaurant_id, pickup_slot);
+  for (const item of data.items) {
+    if (item.menu_item_id) restaurantsDb.prepare('UPDATE menu_items SET remaining = CASE WHEN remaining > 0 THEN remaining - 1 ELSE 0 END WHERE id = ?').run(item.menu_item_id);
+  }
   if (data.payment_method === 'online') {
     coreDb.prepare('INSERT INTO payments (order_id,gateway,method_detail,amount,status,transaction_ref) VALUES (?, ?, ?, ?, ?, ?)').run(info.lastInsertRowid, 'QuickLunch Demo Gateway', 'PSE/Nequi/Tarjeta demo', total, 'paid', code('PAY'));
   }
@@ -267,6 +271,53 @@ app.post('/api/admin/restaurants', auth(['admin']), (req, res) => {
   }
 });
 
+
+app.patch('/api/admin/restaurants/:id', auth(['admin']), (req, res) => {
+  const current = restaurantsDb.prepare('SELECT * FROM restaurants WHERE id = ?').get(req.params.id);
+  if (!current) return res.status(404).json({ message: 'Restaurante no encontrado.' });
+  const body = req.body || {};
+  const allowed = ['name','slug','city','address','latitude','longitude','phone','email','owner_name','owner_document','legal_representative','nit','chamber_commerce','rut','sanitary_concept','firefighter_certificate','land_use_concept','police_opening_notice','food_handler_certificates','personal_data_policy_url','association_valid_until','status'];
+  const updates = [];
+  const values = [];
+  for (const key of allowed) {
+    if (body[key] !== undefined) {
+      updates.push(`${key} = ?`);
+      values.push(key === 'slug' ? toSlug(body[key]) : body[key]);
+    }
+  }
+  if (body.profile !== undefined) { updates.push('profile_json = ?'); values.push(jsonString(body.profile)); }
+  if (body.design !== undefined) { updates.push('design_json = ?'); values.push(jsonString(body.design)); }
+  if (body.openingHours !== undefined) { updates.push('opening_hours_json = ?'); values.push(jsonString(body.openingHours)); }
+  if (body.settings !== undefined) { updates.push('settings_json = ?'); values.push(jsonString(body.settings)); }
+  if (!updates.length) return res.status(400).json({ message: 'No hay cambios para guardar.' });
+  try {
+    values.push(req.params.id);
+    restaurantsDb.prepare(`UPDATE restaurants SET ${updates.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(...values);
+    res.json(serializeRestaurant(restaurantsDb.prepare('SELECT * FROM restaurants WHERE id = ?').get(req.params.id)));
+  } catch (error) {
+    res.status(409).json({ message: 'No se pudo actualizar. Revisa que el slug o NIT no estén repetidos.', detail: error.message });
+  }
+});
+
+app.delete('/api/admin/restaurants/:id', auth(['admin']), (req, res) => {
+  const id = Number(req.params.id);
+  const current = restaurantsDb.prepare('SELECT * FROM restaurants WHERE id = ?').get(id);
+  if (!current) return res.status(404).json({ message: 'Restaurante no encontrado.' });
+  const menus = restaurantsDb.prepare('SELECT id FROM daily_menus WHERE restaurant_id = ?').all(id).map((m) => m.id);
+  for (const menuId of menus) restaurantsDb.prepare('DELETE FROM menu_items WHERE menu_id = ?').run(menuId);
+  restaurantsDb.prepare('DELETE FROM daily_menus WHERE restaurant_id = ?').run(id);
+  restaurantsDb.prepare('DELETE FROM inventory_items WHERE restaurant_id = ?').run(id);
+  restaurantsDb.prepare('DELETE FROM coupons WHERE restaurant_id = ?').run(id);
+  restaurantsDb.prepare('DELETE FROM restaurants WHERE id = ?').run(id);
+  usersDb.prepare("UPDATE accounts SET status = 'inactive', restaurant_id = NULL WHERE role = 'restaurant' AND restaurant_id = ?").run(id);
+  coreDb.prepare('DELETE FROM payments WHERE order_id IN (SELECT id FROM orders WHERE restaurant_id = ?)').run(id);
+  coreDb.prepare('DELETE FROM orders WHERE restaurant_id = ?').run(id);
+  coreDb.prepare('DELETE FROM pickup_slots WHERE restaurant_id = ?').run(id);
+  coreDb.prepare('DELETE FROM support_messages WHERE thread_id IN (SELECT id FROM support_threads WHERE restaurant_id = ?)').run(id);
+  coreDb.prepare('DELETE FROM support_threads WHERE restaurant_id = ?').run(id);
+  res.json({ message: 'Restaurante eliminado del sistema QuickLunch.' });
+});
+
 app.get('/api/admin/applications', auth(['admin']), (_, res) => {
   const rows = restaurantsDb.prepare('SELECT * FROM restaurant_applications ORDER BY created_at DESC').all().map((r) => ({ ...r, legal: parseJson(r.legal_json) }));
   res.json(rows);
@@ -344,8 +395,15 @@ app.get('/api/restaurant/inventory', auth(['restaurant','admin']), restaurantGua
 
 app.post('/api/restaurant/inventory', auth(['restaurant','admin']), restaurantGuard, (req, res) => {
   const restaurant_id = getRestaurantId(req);
-  const { category, name, description, cost, price } = req.body;
-  const info = restaurantsDb.prepare('INSERT INTO inventory_items (restaurant_id,category,name,description,cost,price) VALUES (?,?,?,?,?,?)').run(restaurant_id, category, name, description || '', cost || 0, price || 0);
+  const { category, name, description } = req.body;
+  if (!category || !name) return res.status(400).json({ message: 'Selecciona una categoría y escribe un nombre.' });
+  const isCompletePlate = category === 'complete_plate';
+  const isSpecial = isCompletePlate ? 0 : (req.body.is_special ? 1 : 0);
+  const additionalCost = isSpecial ? Number(req.body.additional_cost || 0) : 0;
+  const price = isCompletePlate ? Number(req.body.price || 0) : 0;
+  const stock = Number(req.body.stock || 0);
+  const info = restaurantsDb.prepare('INSERT INTO inventory_items (restaurant_id,category,name,description,cost,price,stock,is_special,additional_cost) VALUES (?,?,?,?,?,?,?,?,?)')
+    .run(restaurant_id, category, name, description || '', 0, price, stock, isSpecial, additionalCost);
   res.status(201).json(restaurantsDb.prepare('SELECT * FROM inventory_items WHERE id = ?').get(info.lastInsertRowid));
 });
 
@@ -353,7 +411,13 @@ app.patch('/api/restaurant/inventory/:id', auth(['restaurant','admin']), restaur
   const item = restaurantsDb.prepare('SELECT * FROM inventory_items WHERE id = ?').get(req.params.id);
   if (!item) return res.status(404).json({ message: 'Ítem no encontrado.' });
   if (req.user.role === 'restaurant' && item.restaurant_id !== req.user.restaurant_id) return res.status(403).json({ message: 'No autorizado.' });
-  restaurantsDb.prepare('UPDATE inventory_items SET category=?, name=?, description=?, cost=?, price=?, active=? WHERE id=?').run(req.body.category || item.category, req.body.name || item.name, req.body.description ?? item.description, req.body.cost ?? item.cost, req.body.price ?? item.price, req.body.active ?? item.active, req.params.id);
+  const category = req.body.category || item.category;
+  const isCompletePlate = category === 'complete_plate';
+  const isSpecial = isCompletePlate ? 0 : (req.body.is_special ?? item.is_special ?? 0);
+  const additionalCost = isSpecial ? Number(req.body.additional_cost ?? item.additional_cost ?? 0) : 0;
+  const price = isCompletePlate ? Number(req.body.price ?? item.price ?? 0) : 0;
+  restaurantsDb.prepare('UPDATE inventory_items SET category=?, name=?, description=?, cost=?, price=?, stock=?, is_special=?, additional_cost=?, active=? WHERE id=?')
+    .run(category, req.body.name || item.name, req.body.description ?? item.description, 0, price, req.body.stock ?? item.stock ?? 0, isSpecial ? 1 : 0, additionalCost, req.body.active ?? item.active, req.params.id);
   res.json(restaurantsDb.prepare('SELECT * FROM inventory_items WHERE id = ?').get(req.params.id));
 });
 
@@ -368,7 +432,10 @@ app.post('/api/restaurant/menus', auth(['restaurant','admin']), restaurantGuard,
   const { menu_date, mode, title, notes, items } = req.body;
   const info = restaurantsDb.prepare('INSERT INTO daily_menus (restaurant_id,menu_date,mode,title,notes,status) VALUES (?,?,?,?,?,?)').run(restaurant_id, menu_date, mode || 'customizable', title || 'Menú del día', notes || '', req.body.status || 'published');
   const stmt = restaurantsDb.prepare('INSERT INTO menu_items (menu_id,inventory_item_id,category,name,stock,remaining,price_delta,plate_json) VALUES (?,?,?,?,?,?,?,?)');
-  for (const item of items || []) stmt.run(info.lastInsertRowid, item.inventory_item_id || null, item.category || 'complete_plate', item.name, item.stock || 0, item.remaining ?? item.stock ?? 0, item.price_delta || item.price || 0, jsonString(item.plate || {}));
+  for (const item of items || []) {
+    const priceDelta = Number(item.price_delta ?? item.additional_cost ?? item.price ?? 0);
+    stmt.run(info.lastInsertRowid, item.inventory_item_id || null, item.category || 'complete_plate', item.name, item.stock || 0, item.remaining ?? item.stock ?? 0, priceDelta, jsonString(item.plate || {}));
+  }
   res.status(201).json({ id: info.lastInsertRowid });
 });
 

@@ -1,4 +1,4 @@
-# QuickLunch Web Module
+# QuickLunch Web Module v1.0.3
 
 Módulo web funcional para simular el ecosistema de QuickLunch en localhost:
 
@@ -81,6 +81,25 @@ Terminal 2:
 npm run dev:client
 ```
 
+
+## Cambios incluidos en v1.0.3
+
+- Desde `/admin/restaurantes` ahora se puede **editar** la información del restaurante y también **eliminarlo** del sistema demo.
+- Los formularios administrativos y legales usan etiquetas claras en español y ejemplos dentro de cada casilla.
+- Se reemplazó el texto técnico `chamber commerce` por **Matrícula mercantil / Registro en Cámara de Comercio**.
+- La creación de inventario ya no pide precio para proteína, principio, acompañamiento, jugo, postre o extra.
+- Cada componente puede marcarse como **especial** y ahí sí se pide el **costo adicional**.
+- Los platos armados, como `Combo de hamburguesa`, sí piden precio propio.
+- En el pedido del usuario, el menú personalizable cobra el precio base del corrientazo y solo suma adicionales especiales.
+
+Ejemplo implementado:
+
+```txt
+Precio base del corrientazo: $15.000
+Tilapia marcada como especial: +$5.000
+Total del usuario con tilapia: $20.000 antes de tarifa QuickLunch
+```
+
 ## Rutas principales
 
 ```txt
@@ -115,8 +134,8 @@ npm run dev
 2. Iniciar sesión con `nicocr / quick2026`.
 3. Crear o aprobar un restaurante.
 4. Entrar al portal del restaurante con su slug: `/<nombre_restaurante>`.
-5. Crear inventario.
-6. Publicar menú del día.
+5. Crear inventario: componentes normales sin precio, opciones especiales con costo adicional y platos armados con precio propio.
+6. Publicar menú del día: definir precio base del corrientazo, stock diario y modo personalizable/platos armados/mixto.
 7. Entrar a `/home` como usuario.
 8. Registrarse como cliente.
 9. Hacer una reserva y generar QR.
