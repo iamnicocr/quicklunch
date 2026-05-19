@@ -1,428 +1,352 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { BrowserRouter, Routes, Route, Navigate, Link, useNavigate, useParams } from 'react-router-dom';
-import { BarChart3, CheckCircle2, ChefHat, CircleDollarSign, ClipboardList, Clock, Coffee, Edit3, Gift, Home, LayoutDashboard, LogOut, MapPin, MessageCircle, QrCode, Save, Search, ShieldCheck, ShoppingBag, Sparkles, Store, Trash2, UserRound, UsersRound, WalletCards, XCircle } from 'lucide-react';
-import { BarChart, Bar, CartesianGrid, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts';
+import { BrowserRouter, Routes, Route, Navigate, Link, useLocation, useNavigate, useParams } from 'react-router-dom';
+import { AlertTriangle, BarChart3, Camera, CheckCircle2, ChefHat, ClipboardList, Clock, CreditCard, DollarSign, Edit3, Gift, Home, ImagePlus, LayoutDashboard, LogOut, MapPin, MessageCircle, PackagePlus, QrCode, RefreshCw, Save, Search, Settings, ShieldCheck, ShoppingBag, Star, Store, Trash2, Upload, UserRound, UsersRound, WalletCards, XCircle } from 'lucide-react';
+import { BarChart, Bar, CartesianGrid, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Legend } from 'recharts';
 import './styles/theme.css';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
+const SERVER_URL = API_URL.replace(/\/api\/?$/, '');
 const MAP_URL = import.meta.env.VITE_GOOGLE_MAPS_EMBED_URL || 'https://www.google.com/maps?q=corrientazos%20Cali%20Colombia&output=embed';
 
-function api(path, options = {}) {
-  const token = localStorage.getItem('ql_token');
-  return fetch(`${API_URL}${path}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(options.headers || {})
-    }
-  }).then(async (res) => {
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.message || 'Error QuickLunch');
-    return data;
-  });
-}
+const AuthContext = createContext(null);
 
-function money(v) {
-  return new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(Number(v || 0));
-}
-
-
-
-const CATEGORY_LABELS = {
-  protein: 'Proteína',
-  principle: 'Principio',
-  side: 'Acompañamiento',
-  drink: 'Jugo o bebida',
-  dessert: 'Postre',
-  extra: 'Extra',
-  complete_plate: 'Plato armado'
+const ROLE_LABELS = {
+  owner: 'Owner', admin: 'Administrador', restaurant_owner: 'Dueño restaurante', restaurant_staff: 'Operador restaurante', customer: 'Cliente'
 };
-
-const STATUS_LABELS = {
-  active: 'Activo', inactive: 'Inactivo', banned: 'Bloqueado', pending: 'Pendiente', approved: 'Aprobado', rejected: 'Rechazado',
-  reserved: 'Reservado', preparing: 'En preparación', ready: 'Listo', claimed: 'Reclamado', delayed: 'En demora', cancelled: 'Cancelado', no_show: 'No reclamado'
-};
-
-const MODE_LABELS = { customizable: 'Personalizable recomendado', fixed_plates: 'Platos armados', mixed: 'Mixto' };
-const BASE_LUNCH_PRICE = 15000;
-
+const CATEGORY_LABELS = { protein: 'Proteína', principle: 'Principio', side: 'Acompañamiento', soup: 'Sopa', drink: 'Jugo o bebida', dessert: 'Postre', extra: 'Adicional', complete_plate: 'Plato armado' };
+const ROLE_OPTIONS = Object.entries(ROLE_LABELS).map(([value, label]) => ({ value, label }));
+const STATUS_OPTIONS = [{value:'active',label:'Activo'}, {value:'banned',label:'Baneado'}, {value:'inactive',label:'Inactivo'}];
+const YES_NO_OPTIONS = [{value:'no',label:'No'}, {value:'yes',label:'Sí'}];
+const ORDER_STATUS = { reserved: 'Reservado', preparing: 'En preparación', ready: 'Listo', delayed: 'En demora', claimed: 'QR reclamado', cancelled: 'Cancelado', no_show: 'No reclamado' };
+const COMPONENTS = ['soup', 'protein', 'principle', 'side', 'drink', 'dessert'];
+const LEGAL_FIELDS = ['name','slug','address','phone','email','owner_name','owner_document','legal_representative','nit','chamber_commerce','rut','sanitary_concept','firefighter_certificate','land_use_concept','police_opening_notice','food_handler_certificates','personal_data_policy_url','association_valid_until','manager_username','manager_password','manager_full_name','manager_email'];
+const REST_FIELDS = ['name','slug','address','phone','email','owner_name','owner_document','legal_representative','nit','chamber_commerce','rut','sanitary_concept','firefighter_certificate','land_use_concept','police_opening_notice','food_handler_certificates','personal_data_policy_url','association_valid_until','status','prestige_points'];
 const FIELD_LABELS = {
-  name: 'Nombre comercial del restaurante', slug: 'Ruta pública del restaurante', city: 'Ciudad', address: 'Dirección completa', phone: 'Teléfono', email: 'Correo de contacto',
-  owner_name: 'Nombre del dueño', owner_document: 'Documento del dueño', legal_representative: 'Representante legal', nit: 'NIT o identificación tributaria',
-  chamber_commerce: 'Matrícula mercantil / Registro en Cámara de Comercio', rut: 'RUT actualizado', sanitary_concept: 'Concepto sanitario o soporte sanitario',
-  firefighter_certificate: 'Certificado de Bomberos / seguridad humana', land_use_concept: 'Concepto de uso del suelo', police_opening_notice: 'Aviso de apertura a la autoridad cuando aplique',
-  food_handler_certificates: 'Soportes de manipulación de alimentos', personal_data_policy_url: 'Política de tratamiento de datos personales', association_valid_until: 'Vigencia de asociación con QuickLunch',
-  manager_username: 'Usuario del gestor del restaurante', manager_password: 'Contraseña del gestor', manager_full_name: 'Nombre completo del gestor', manager_email: 'Correo del gestor'
+  name: 'Nombre comercial', slug: 'Dirección URL del restaurante', address: 'Dirección física', phone: 'Teléfono', email: 'Correo', owner_name: 'Nombre del dueño', owner_document: 'Documento del dueño', legal_representative: 'Representante legal', nit: 'NIT o identificación tributaria', chamber_commerce: 'Matrícula mercantil / Registro en Cámara de Comercio', rut: 'RUT actualizado', sanitary_concept: 'Concepto sanitario', firefighter_certificate: 'Certificado de Bomberos / seguridad humana', land_use_concept: 'Concepto de uso del suelo', police_opening_notice: 'Aviso de apertura a autoridad cuando aplique', food_handler_certificates: 'Soportes de manipulación de alimentos', personal_data_policy_url: 'Política de tratamiento de datos personales', association_valid_until: 'Vigencia de asociación QuickLunch', manager_username: 'Usuario del dueño gestor', manager_password: 'Contraseña del gestor', manager_full_name: 'Nombre completo del gestor', manager_email: 'Correo del gestor', status: 'Estado', prestige_points: 'Puntos de acreditación'
+};
+const PLACEHOLDERS = {
+  name: 'Ej: Corrientazo El Buen Sazón', slug: 'Ej: buen-sazon', address: 'Ej: Cra. 5 #12-34, Cali', phone: 'Ej: 3001234567', email: 'Ej: restaurante@email.com', owner_name: 'Ej: María Gómez', owner_document: 'Ej: CC 1.144.000.000', legal_representative: 'Ej: María Gómez', nit: 'Ej: 901234567-8', chamber_commerce: 'Ej: Matrícula mercantil No. 123456', rut: 'Ej: RUT actualizado 2026', sanitary_concept: 'Ej: Concepto sanitario favorable', firefighter_certificate: 'Ej: Certificado de Bomberos vigente', land_use_concept: 'Ej: Uso permitido para restaurante', police_opening_notice: 'Ej: Aviso radicado / No aplica', food_handler_certificates: 'Ej: Certificados del personal de cocina', personal_data_policy_url: 'Ej: https://restaurante.com/datos', association_valid_until: 'Ej: 2026-12-31', manager_username: 'Ej: buen_sazon_owner', manager_password: 'Mínimo 6 caracteres', manager_full_name: 'Ej: Juan Pérez', manager_email: 'Ej: gestor@email.com'
 };
 
-const FIELD_PLACEHOLDERS = {
-  name: 'Ej: Corrientazos La 5ta', slug: 'Ej: corrientazos-la-5ta', city: 'Cali', address: 'Ej: Cra. 5 #12-34, San Nicolás, Cali', phone: 'Ej: 3001234567', email: 'Ej: restaurante@email.com',
-  owner_name: 'Ej: María Fernanda Gómez', owner_document: 'Ej: CC 1.144.000.000', legal_representative: 'Ej: María Fernanda Gómez', nit: 'Ej: 901234567-8',
-  chamber_commerce: 'Ej: Matrícula mercantil No. 123456 de Cali', rut: 'Ej: RUT actualizado PDF / código interno', sanitary_concept: 'Ej: Concepto sanitario favorable 2026',
-  firefighter_certificate: 'Ej: Certificado Bomberos Cali vigente', land_use_concept: 'Ej: Uso permitido para restaurante', police_opening_notice: 'Ej: Aviso radicado o no aplica',
-  food_handler_certificates: 'Ej: 3 certificados del personal de cocina', personal_data_policy_url: 'Ej: https://restaurante.com/politica-datos', association_valid_until: 'Ej: 2026-12-31',
-  manager_username: 'Ej: la5ta_admin', manager_password: 'Mínimo 6 caracteres', manager_full_name: 'Ej: Juan Pérez - cajero principal', manager_email: 'Ej: gestor@email.com'
-};
+function money(v) { return new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(Number(v || 0)); }
+function today() { return new Date().toISOString().slice(0, 10); }
+function asset(url) { if (!url) return ''; return url.startsWith('http') ? url : `${SERVER_URL}${url}`; }
+function fieldLabel(k) { return FIELD_LABELS[k] || k.replaceAll('_', ' '); }
+function placeholder(k) { return PLACEHOLDERS[k] || 'Escribe aquí'; }
+function canAdmin(role) { return ['owner', 'admin'].includes(role); }
+function canRestaurant(role) { return ['owner', 'restaurant_owner', 'restaurant_staff'].includes(role); }
+function canFullRestaurant(role) { return ['owner', 'restaurant_owner'].includes(role); }
+function categoryLabel(k) { return CATEGORY_LABELS[k] || k; }
+function orderStatus(k) { return ORDER_STATUS[k] || k; }
+function asArray(value) { return Array.isArray(value) ? value : []; }
+function safeImg(e) { e.currentTarget.onerror = null; e.currentTarget.style.display = 'none'; }
 
-function label(key) { return FIELD_LABELS[key] || key.replaceAll('_', ' '); }
-function placeholder(key) { return FIELD_PLACEHOLDERS[key] || 'Escribe la información solicitada'; }
-function categoryLabel(key) { return CATEGORY_LABELS[key] || key; }
-function statusLabel(key) { return STATUS_LABELS[key] || key; }
-function modeLabel(key) { return MODE_LABELS[key] || key; }
-function inputType(key) { return key.includes('password') ? 'password' : key.includes('email') ? 'email' : key.includes('until') ? 'date' : 'text'; }
-function itemExtra(item) { return Number(item.price_delta ?? item.additional_cost ?? item.price ?? 0); }
+async function api(path, options = {}) {
+  const token = localStorage.getItem('ql_token');
+  let finalPath = path;
+  const restaurantSlug = localStorage.getItem('ql_restaurant_slug');
+  if (restaurantSlug && finalPath.startsWith('/restaurant/') && !finalPath.includes('slug=')) {
+    finalPath += `${finalPath.includes('?') ? '&' : '?'}slug=${encodeURIComponent(restaurantSlug)}`;
+  }
+  const headers = { ...(options.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }), ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(options.headers || {}) };
+  let res;
+  try {
+    res = await fetch(`${API_URL}${finalPath}`, { ...options, headers });
+  } catch (error) {
+    throw new Error('No se pudo conectar con el servidor de QuickLunch. Verifica que el backend esté encendido en http://localhost:4000 y que no se haya caído por una base vieja.');
+  }
+  const text = await res.text();
+  let data = {};
+  try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
+  if (!res.ok) throw new Error(data.message || 'Error de QuickLunch');
+  return data;
+}
 
-function useAuth() {
+class ErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(error) { return { error }; }
+  render() {
+    if (this.state.error) return <div className="panic card"><AlertTriangle /><h2>No se pudo cargar esta pantalla</h2><p>{this.state.error.message}</p><button className="primary-btn" onClick={() => location.reload()}>Recargar pantalla</button></div>;
+    return this.props.children;
+  }
+}
+
+function AuthProvider({ children }) {
   const [account, setAccount] = useState(() => JSON.parse(localStorage.getItem('ql_account') || 'null'));
-  const save = (payload) => {
-    localStorage.setItem('ql_token', payload.token);
-    localStorage.setItem('ql_account', JSON.stringify(payload.account));
-    setAccount(payload.account);
-  };
+  const [booting, setBooting] = useState(!!localStorage.getItem('ql_token'));
+  useEffect(() => {
+    if (!localStorage.getItem('ql_token')) return setBooting(false);
+    api('/me').then((me) => { localStorage.setItem('ql_account', JSON.stringify(me)); setAccount(me); }).catch(() => { localStorage.removeItem('ql_token'); localStorage.removeItem('ql_account'); setAccount(null); }).finally(() => setBooting(false));
+  }, []);
+  const save = (payload) => { localStorage.setItem('ql_token', payload.token); localStorage.setItem('ql_account', JSON.stringify(payload.account)); setAccount(payload.account); };
   const logout = () => { localStorage.removeItem('ql_token'); localStorage.removeItem('ql_account'); setAccount(null); };
-  return { account, save, logout };
+  return <AuthContext.Provider value={{ account, save, logout, booting, refresh: () => api('/me').then(setAccount) }}>{children}</AuthContext.Provider>;
 }
+function useAuth() { return useContext(AuthContext); }
 
-function Logo({ compact = false }) {
-  return <div className="logo"><span className="logo-mark"><ChefHat size={compact ? 18 : 22} /></span><span>{compact ? 'QL' : 'QuickLunch'}</span></div>;
-}
+function Loading({ label = 'Cargando QuickLunch...' }) { return <div className="loading-card"><RefreshCw className="spin" /><strong>{label}</strong><span>Si tu internet está lento, la app reintenta sin dejar la pantalla en blanco.</span></div>; }
+function Toast({ message, type = 'info', onClose }) { if (!message) return null; return <div className={`toast ${type}`} onClick={onClose}>{message}</div>; }
+function Logo() { return <div className="logo"><span className="logo-mark"><ChefHat size={22} /></span><span>QuickLunch</span></div>; }
+function Stat({ icon: Icon, label, value, hint }) { return <div className="stat-card"><Icon size={22} /><div><span>{label}</span><strong>{value}</strong>{hint && <small>{hint}</small>}</div></div>; }
+function Empty({ text = 'Aún no hay datos.' }) { return <div className="empty"><ClipboardList /><p>{text}</p></div>; }
+function Field({ label, children }) { return <label className="field"><span>{label}</span>{children}</label>; }
+function Input({ value, onChange, label, placeholder, type = 'text' }) { return <Field label={label}><input type={type} value={value || ''} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} /></Field>; }
+function Select({ value, onChange, label, children }) { return <Field label={label}><select value={value || ''} onChange={(e) => onChange(e.target.value)}>{children}</select></Field>; }
+function MapPanel({ count = 0 }) { return <div className="map-panel"><iframe title="Mapa QuickLunch Cali" src={MAP_URL} loading="lazy" /><div className="map-overlay"><strong><MapPin size={16}/> Cali</strong><span>{count} restaurantes aliados</span></div></div>; }
+function Badge({ children, tone = 'info' }) { return <span className={`badge ${tone}`}>{children}</span>; }
 
-function Toast({ message, type = 'info', onClose }) {
-  if (!message) return null;
-  return <div className={`toast ${type}`} onClick={onClose}>{message}</div>;
-}
-
-function CityGate({ value, setValue }) {
-  const [toast, setToast] = useState('');
-  const change = (e) => {
-    const next = e.target.value;
-    if (next !== 'Cali') { setToast('Ciudad próximamente disponible'); return; }
-    setValue(next);
-  };
-  return <>
-    <label className="field compact"><span>Ciudad activa</span><select value={value} onChange={change}><option>Cali</option><option>Pasto</option><option>Bogotá</option></select></label>
-    <Toast message={toast} type="warning" onClose={() => setToast('')} />
-  </>;
-}
-
-function LoginCard({ role, title, subtitle, onLogged, allowRegister = false }) {
+function LoginCard({ target = 'customer', title, subtitle, allowRegister = false }) {
+  const { save } = useAuth();
   const [city, setCity] = useState('Cali');
   const [form, setForm] = useState({ username: 'nicocr', password: 'quick2026' });
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
-  const submit = async (e) => {
-    e.preventDefault(); setError(''); setLoading(true);
+  const [msg, setMsg] = useState('');
+  const [register, setRegister] = useState(false);
+  const [restaurantApply, setRestaurantApply] = useState(false);
+  const [recover, setRecover] = useState(false);
+  const [recoveryResult, setRecoveryResult] = useState(null);
+  const [recoverId, setRecoverId] = useState('');
+  const [newUser, setNewUser] = useState({ full_name: '', username: '', email: '', phone: '', password: '', consent_analytics: true });
+  const emptyApplication = Object.fromEntries(LEGAL_FIELDS.map((f) => [f, '']));
+  const [application, setApplication] = useState({ ...emptyApplication, city: 'Cali' });
+  const checkRole = (role) => {
+    if (role === 'owner') return true;
+    if (target === 'admin') return role === 'admin';
+    if (target === 'restaurant') return ['restaurant_owner', 'restaurant_staff'].includes(role);
+    if (target === 'customer') return role === 'customer';
+    return true;
+  };
+  const login = async (e) => {
+    e.preventDefault(); setMsg('');
     try {
+      if (city !== 'Cali') throw new Error('Ciudad próximamente disponible.');
       const payload = await api('/auth/login', { method: 'POST', body: JSON.stringify({ ...form, city }) });
-      if (role && payload.account.role !== role && payload.account.role !== 'admin') throw new Error(`Esta entrada no corresponde al perfil seleccionado.`);
-      onLogged(payload);
-    } catch (err) { setError(err.message); } finally { setLoading(false); }
+      if (!checkRole(payload.account.role)) throw new Error('Tu rol no tiene acceso a esta plataforma.');
+      save(payload);
+    } catch (err) { setMsg(err.message); }
+  };
+  const submitRegister = async (e) => {
+    e.preventDefault(); setMsg('');
+    try { const payload = await api('/auth/register', { method: 'POST', body: JSON.stringify(newUser) }); save(payload); }
+    catch (err) { setMsg(err.message); }
+  };
+  const submitApplication = async (e) => {
+    e.preventDefault(); setMsg('');
+    try {
+      const r = await api('/restaurants/apply', { method: 'POST', body: JSON.stringify({ ...application, city: 'Cali' }) });
+      setMsg(`${r.message} URL solicitada: /${r.requested_slug}`);
+      setRestaurantApply(false);
+    } catch (err) { setMsg(err.message); }
+  };
+  const submitRecovery = async () => {
+    setRecoveryResult(null); setMsg('');
+    try { setRecoveryResult(await api('/auth/password-recovery', { method: 'POST', body: JSON.stringify({ identifier: recoverId }) })); }
+    catch (err) { setMsg(err.message); }
   };
   return <section className="login-shell">
-    <div className="login-card card glass">
-      <Logo />
-      <h1>{title}</h1>
-      <p>{subtitle}</p>
-      <CityGate value={city} setValue={setCity} />
-      <form onSubmit={submit} className="form-grid">
-        <label className="field"><span>Usuario o correo</span><input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} /></label>
-        <label className="field"><span>Contraseña</span><input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} /></label>
-        {error && <p className="error-msg">{error}</p>}
-        <button className="primary-btn" disabled={loading}>{loading ? 'Ingresando...' : 'Ingresar'}</button>
-      </form>
-      {allowRegister && <p className="muted center">¿Restaurante nuevo? Usa la pestaña de registro para enviar la solicitud legal.</p>}
+    <div className="login-card card glass"><Logo /><h1>{title}</h1><p>{subtitle}</p>
+      <Field label="Ciudad activa"><select value={city} onChange={(e) => { if (e.target.value !== 'Cali') setMsg('Ciudad próximamente disponible.'); else { setCity(e.target.value); setMsg(''); } }}><option>Cali</option><option>Pasto</option><option>Bogotá</option></select></Field>
+      {!register && !restaurantApply ? <form onSubmit={login} className="form-grid">
+        <Input label="Usuario o correo" value={form.username} onChange={(v) => setForm({ ...form, username: v })} placeholder="Ej: nicocr o correo@ejemplo.com" />
+        <Input type="password" label="Contraseña" value={form.password} onChange={(v) => setForm({ ...form, password: v })} placeholder="Ej: quick2026" />
+        {msg && <p className="error-msg">{msg}</p>}
+        <button className="primary-btn">Ingresar</button>
+      </form> : register ? <form onSubmit={submitRegister} className="form-grid">
+        <Input label="Nombre completo" value={newUser.full_name} onChange={(v) => setNewUser({ ...newUser, full_name: v })} placeholder="Ej: Nico Rodríguez" />
+        <Input label="Usuario" value={newUser.username} onChange={(v) => setNewUser({ ...newUser, username: v })} placeholder="Ej: nicocr" />
+        <Input label="Correo para recuperación" value={newUser.email} onChange={(v) => setNewUser({ ...newUser, email: v })} placeholder="correo@email.com" />
+        <Input label="Celular" value={newUser.phone} onChange={(v) => setNewUser({ ...newUser, phone: v })} placeholder="3001234567" />
+        <Input type="password" label="Contraseña" value={newUser.password} onChange={(v) => setNewUser({ ...newUser, password: v })} placeholder="Mínimo 6 caracteres" />
+        <Select label="Permiso para recomendaciones" value={newUser.consent_analytics ? 'yes' : 'no'} onChange={(v) => setNewUser({ ...newUser, consent_analytics: v === 'yes' })}>{YES_NO_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}</Select>
+        {msg && <p className="error-msg">{msg}</p>}
+        <button className="primary-btn">Crear cuenta</button>
+      </form> : <form onSubmit={submitApplication} className="form-grid admin-form">
+        <p className="muted">Solicitud de registro del restaurante. QuickLunch la revisa desde el panel administrativo.</p>
+        {LEGAL_FIELDS.map((f) => <Input key={f} type={f.includes('password')?'password':f.includes('until')?'date':'text'} label={fieldLabel(f)} placeholder={placeholder(f)} value={application[f]} onChange={(v) => setApplication({ ...application, [f]: v })}/>) }
+        {msg && <p className="error-msg">{msg}</p>}
+        <button className="primary-btn">Enviar solicitud de restaurante</button>
+      </form>}
+      <div className="login-actions">
+        {allowRegister && <button className="ghost-btn" onClick={() => { setRegister(!register); setRestaurantApply(false); }}>{register ? 'Ya tengo cuenta' : 'Crear cuenta de cliente'}</button>}
+        {target === 'restaurant' && <button className="ghost-btn" onClick={() => { setRestaurantApply(!restaurantApply); setRegister(false); }}>{restaurantApply ? 'Volver al login' : 'Registro de restaurante'}</button>}
+        <button className="ghost-btn" type="button" onClick={() => setRecover(true)}>Recuperar contraseña</button>
+      </div>
     </div>
+    {recover && <Modal title="Recuperación piloto de contraseña" onClose={() => { setRecover(false); setRecoveryResult(null); }}><div className="form-grid"><p>Versión piloto: escribe únicamente el usuario y QuickLunch consulta la base local para mostrar la clave en pantalla.</p><Input label="Usuario" value={recoverId} onChange={setRecoverId} placeholder="Ej: nicocr"/><button className="primary-btn" onClick={submitRecovery}>Mostrar clave piloto</button>{recoveryResult && <div className="success-msg"><b>{recoveryResult.message}</b><p>Usuario: {recoveryResult.username}</p><p>Correo asociado: {recoveryResult.recovery_email}</p><p><b>Clave:</b> {recoveryResult.visible_password}</p></div>}{msg && <p className="error-msg">{msg}</p>}</div></Modal>}
   </section>;
 }
 
-function MapPanel({ restaurants = [], compact = false }) {
-  return <div className={`map-panel ${compact ? 'compact-map' : ''}`}>
-    <iframe title="Mapa Google QuickLunch Cali" src={MAP_URL} loading="lazy" />
-    <div className="map-overlay">
-      <strong><MapPin size={16} /> Cali</strong>
-      <span>{restaurants.length} restaurantes aliados activos</span>
-    </div>
-  </div>;
-}
-
-function StatCard({ icon: Icon, label, value, hint }) {
-  return <div className="stat-card"><Icon size={22} /><div><span>{label}</span><strong>{value}</strong>{hint && <small>{hint}</small>}</div></div>;
-}
-
-function Shell({ children, nav, account, logout, mode = 'desktop' }) {
+function Shell({ nav, children, mode = 'desktop' }) {
+  const { account, logout } = useAuth();
   return <div className={`app-shell ${mode}`}>
-    <aside className="sidebar"><Logo /><nav>{nav.map((item) => <Link key={item.to} to={item.to}><item.icon size={18} /> {item.label}</Link>)}</nav><button className="ghost-btn" onClick={logout}><LogOut size={18} /> Cerrar sesión</button></aside>
-    <main className="content-area"><header className="topbar"><div><p>Hola, {account?.full_name || account?.username}</p><h2>{account?.role === 'admin' ? 'Panel administrativo total' : 'Gestión del restaurante'}</h2></div><span className="role-pill">{account?.role === 'admin' ? 'Administrador' : account?.role === 'restaurant' ? 'Restaurante' : 'Cliente'}</span></header>{children}</main>
+    <aside className="sidebar"><Logo /><nav>{nav.map((n) => <Link key={n.to} to={n.to}><n.icon size={18}/>{n.label}</Link>)}</nav><button className="ghost-btn" onClick={logout}><LogOut size={18}/> Cerrar sesión</button></aside>
+    <main className="content-area"><header className="topbar"><div><p>Hola, {account?.full_name || account?.username}</p><h2>{ROLE_LABELS[account?.role] || account?.role}</h2></div><Badge>{account?.role_label || ROLE_LABELS[account?.role]}</Badge></header>{children}</main>
   </div>;
 }
 
+function useLoad(loader, deps = []) {
+  const [data, setData] = useState(null); const [error, setError] = useState(''); const [loading, setLoading] = useState(true);
+  const run = () => { setLoading(true); setError(''); Promise.resolve(loader()).then(setData).catch((e) => setError(e.message)).finally(() => setLoading(false)); };
+  useEffect(run, deps);
+  return { data, setData, error, loading, reload: run };
+}
+
+// ADMIN
 function AdminApp() {
-  const auth = useAuth();
-  if (!auth.account || !['admin'].includes(auth.account.role)) return <LoginCard role="admin" title="Administración QuickLunch" subtitle="Acceso privado para gestionar Cali, restaurantes, usuarios, soporte, pagos y operación." onLogged={auth.save} />;
-  const nav = [
-    { to: '/admin', icon: LayoutDashboard, label: 'Inicio' }, { to: '/admin/restaurantes', icon: Store, label: 'Restaurantes' }, { to: '/admin/solicitudes', icon: ClipboardList, label: 'Solicitudes' }, { to: '/admin/usuarios', icon: UsersRound, label: 'Usuarios' }, { to: '/admin/analitica', icon: BarChart3, label: 'Analítica' }, { to: '/admin/soporte', icon: MessageCircle, label: 'Soporte' }
-  ];
-  return <Shell nav={nav} account={auth.account} logout={auth.logout}>
-    <Routes>
-      <Route index element={<AdminDashboard />} />
-      <Route path="restaurantes" element={<AdminRestaurants />} />
-      <Route path="solicitudes" element={<AdminApplications />} />
-      <Route path="usuarios" element={<AdminUsers />} />
-      <Route path="analitica" element={<AdminAnalytics />} />
-      <Route path="soporte" element={<SupportPanel />} />
-    </Routes>
-  </Shell>;
+  const { account, booting } = useAuth();
+  if (booting) return <Loading />;
+  if (!account || !canAdmin(account.role)) return <LoginCard target="admin" title="Administración QuickLunch" subtitle="Panel privado para controlar restaurantes, usuarios, comisiones, roles y soporte." />;
+  const nav = [{ to:'/admin', icon:LayoutDashboard, label:'Inicio' }, { to:'/admin/restaurantes', icon:Store, label:'Restaurantes' }, { to:'/admin/usuarios', icon:UsersRound, label:'Usuarios' }, { to:'/admin/cupones', icon:Gift, label:'Cupones' }, { to:'/admin/solicitudes', icon:ClipboardList, label:'Solicitudes' }, { to:'/admin/configuracion', icon:Settings, label:'Comisiones' }, { to:'/admin/soporte', icon:MessageCircle, label:'Soporte' }];
+  return <Shell nav={nav}><Routes><Route index element={<AdminDashboard/>}/><Route path="restaurantes" element={<AdminRestaurants/>}/><Route path="usuarios" element={<AdminUsers/>}/><Route path="cupones" element={<AdminCoupons/>}/><Route path="solicitudes" element={<AdminApplications/>}/><Route path="configuracion" element={<AdminSettings/>}/><Route path="soporte" element={<SupportPanel/>}/></Routes></Shell>;
 }
-
 function AdminDashboard() {
-  const [data, setData] = useState(null);
-  const [restaurants, setRestaurants] = useState([]);
-  useEffect(() => { api('/admin/dashboard').then(setData); api('/admin/restaurants').then(setRestaurants); }, []);
-  if (!data) return <p>Cargando panel...</p>;
-  return <div className="page-grid">
-    <section className="hero-card"><div><span className="eyebrow">Cali · operación inicial</span><h1>Control central de QuickLunch</h1><p>Visualiza restaurantes, usuarios, ingresos, solicitudes legales y la operación QR desde un único panel.</p></div><CityPreview /></section>
-    <div className="stats-grid"><StatCard icon={Store} label="Restaurantes" value={data.restaurants} /><StatCard icon={UsersRound} label="Usuarios" value={data.users} /><StatCard icon={ClipboardList} label="Solicitudes" value={data.pendingApplications} /><StatCard icon={CircleDollarSign} label="Ingresos procesados" value={money(data.revenue)} /></div>
-    <section className="card two-col"><div><h3>Mapa de corrientazos aliados</h3><MapPanel restaurants={restaurants} /></div><div><h3>Modelo QuickLunch</h3><ul className="check-list"><li>Prepago: tarifa app {money(data.settings.fees.online)}</li><li>Pago en local: tarifa app {money(data.settings.fees.cash)}</li><li>Cupos cada {data.settings.pickup.intervalMinutes} minutos</li><li>QR obligatorio: no entrega sin escaneo</li><li>Ventana de recogida máxima: {data.settings.pickup.maxWindowMinutes} minutos</li></ul></div></section>
-    <section className="card"><h3>Restaurantes con más movimiento</h3><div className="table-wrap"><table><thead><tr><th>Restaurante</th><th>Pedidos</th><th>Ventas</th></tr></thead><tbody>{data.topRestaurants.map((r, i) => <tr key={i}><td>{r.restaurant_name || 'Sin datos'}</td><td>{r.orders}</td><td>{money(r.sales)}</td></tr>)}</tbody></table></div></section>
+  const { data, loading, error } = useLoad(() => Promise.all([api('/admin/dashboard'), api('/admin/restaurants')]).then(([dashboard, restaurants]) => ({ dashboard, restaurants })), []);
+  if (loading) return <Loading label="Cargando administración..."/>; if (error) return <Empty text={error}/>;
+  const d = data.dashboard;
+  return <div className="page-grid"><section className="hero-card"><div><span className="eyebrow">Cali · Panel total</span><h1>Control central de QuickLunch</h1><p>Los restaurantes solo reciben dinero cuando su pedido queda en estado QR reclamado.</p></div><ShieldCheck size={70}/></section>
+    <div className="stats-grid"><Stat icon={Store} label="Restaurantes" value={d.restaurants}/><Stat icon={UsersRound} label="Clientes" value={d.users}/><Stat icon={ClipboardList} label="Solicitudes" value={d.pendingApplications}/><Stat icon={DollarSign} label="Dinero liberado a restaurantes" value={money(d.releasedToRestaurants)} hint="Solo QR reclamado"/><Stat icon={WalletCards} label="Ingresos libres de la app" value={money(d.appFreeRevenue)} hint="Comisiones reclamadas"/></div>
+    <section className="card two-col"><MapPanel count={data.restaurants.length}/><div><h3>Reglas activas</h3><ul className="check-list"><li>Prepago: {money(d.settings.fees.online)} por almuerzo.</li><li>Pago en local: {money(d.settings.fees.cash)} por almuerzo.</li><li>Cancelación cliente hasta 1 hora antes.</li><li>QR obligatorio para liberar dinero al restaurante.</li></ul></div></section>
+    <section className="card"><h3>IA operativa QuickLunch</h3><ul className="check-list">{asArray(d.aiInsights).map((x)=><li key={x}>{x}</li>)}</ul></section><section className="card"><h3>Top restaurantes</h3><Table headers={["Restaurante","Pedidos","Liberado"]} rows={d.topRestaurants.map((r) => [r.restaurant_name || 'Sin nombre', r.orders, money(r.settled_sales)])}/></section>
   </div>;
 }
-
-function CityPreview() {
-  const [city, setCity] = useState('Cali');
-  return <div className="mini-panel"><CityGate value={city} setValue={setCity} /><p>Cali está habilitada. Pasto y Bogotá quedan visibles como expansión futura.</p></div>;
-}
-
+function Table({ headers, rows }) { return <div className="table-wrap"><table><thead><tr>{headers.map((h) => <th key={h}>{h}</th>)}</tr></thead><tbody>{rows.map((r,i) => <tr key={i}>{r.map((c,j) => <td key={j}>{c}</td>)}</tr>)}</tbody></table></div>; }
 function AdminRestaurants() {
-  const editableFields = ['name','slug','address','phone','email','owner_name','owner_document','legal_representative','nit','chamber_commerce','rut','sanitary_concept','firefighter_certificate','land_use_concept','police_opening_notice','food_handler_certificates','personal_data_policy_url','association_valid_until','status'];
-  const createFields = ['name','slug','address','phone','email','owner_name','owner_document','legal_representative','nit','chamber_commerce','rut','sanitary_concept','firefighter_certificate','land_use_concept','police_opening_notice','food_handler_certificates','personal_data_policy_url','association_valid_until','manager_username','manager_password','manager_full_name','manager_email'];
-  const empty = Object.fromEntries(createFields.map((f) => [f, f === 'status' ? 'active' : '']));
-  const [restaurants, setRestaurants] = useState([]);
-  const [form, setForm] = useState(empty);
-  const [editing, setEditing] = useState(null);
-  const [msg, setMsg] = useState('');
-  const load = () => api('/admin/restaurants').then(setRestaurants);
-  useEffect(load, []);
-  const create = async (e) => {
-    e.preventDefault(); setMsg('');
-    try { await api('/admin/restaurants', { method: 'POST', body: JSON.stringify(form) }); setForm(empty); setMsg('Restaurante creado con su gestor.'); load(); }
-    catch (err) { setMsg(err.message); }
+  const { account } = useAuth();
+  const empty = Object.fromEntries(LEGAL_FIELDS.map((f) => [f, '']));
+  const [form, setForm] = useState(empty); const [editing, setEditing] = useState(null); const [fees, setFees] = useState(null); const [msg, setMsg] = useState('');
+  const { data: rawRestaurants = [], loading, reload } = useLoad(() => api('/admin/restaurants'), []);
+  const restaurants = asArray(rawRestaurants);
+  const saveCreate = async (e) => { e.preventDefault(); setMsg(''); try { await api('/admin/restaurants', { method:'POST', body:JSON.stringify(form) }); setForm(empty); setMsg('Restaurante creado.'); reload(); } catch(e){ setMsg(e.message); } };
+  const saveEdit = async () => { try { await api(`/admin/restaurants/${editing.id}`, { method:'PATCH', body:JSON.stringify(editing) }); setEditing(null); setMsg('Restaurante actualizado.'); reload(); } catch(e){ alert(e.message); } };
+  const remove = async (r) => { if (!confirm(`¿Eliminar ${r.name}?`)) return; try { await api(`/admin/restaurants/${r.id}`, { method:'DELETE' }); reload(); } catch(e){ alert(e.message); } };
+  const saveFees = async () => { try { await api(`/admin/restaurants/${fees.id}/fees`, { method:'PATCH', body:JSON.stringify(fees) }); setFees(null); reload(); } catch(e){ alert(e.message); } };
+  const fieldFor = (source, setSource, f) => {
+    if (f === 'status') return <Select key={f} label={fieldLabel(f)} value={source[f]} onChange={(v)=>setSource({...source,[f]:v})}><option value="active">Activo</option><option value="pending">Pendiente</option><option value="disabled">Inhabilitado</option><option value="rejected">Rechazado</option></Select>;
+    return <Input key={f} type={f.includes('password')?'password':f.includes('until')?'date':'text'} label={fieldLabel(f)} placeholder={placeholder(f)} value={source[f]} onChange={(v) => setSource({ ...source, [f]: v })}/>;
   };
-  const beginEdit = (restaurant) => setEditing({ id: restaurant.id, ...Object.fromEntries(editableFields.map((f) => [f, restaurant[f] || ''])) });
-  const saveEdit = async () => {
-    if (!editing?.id) return;
-    try { await api(`/admin/restaurants/${editing.id}`, { method: 'PATCH', body: JSON.stringify(editing) }); setMsg('Datos del restaurante actualizados.'); setEditing(null); load(); }
-    catch (err) { setMsg(err.message); }
-  };
-  const remove = async (restaurant) => {
-    const ok = window.confirm(`¿Eliminar ${restaurant.name}? Esta acción borra inventario, menús, cupones, pedidos demo y desactiva sus gestores.`);
-    if (!ok) return;
-    try { await api(`/admin/restaurants/${restaurant.id}`, { method: 'DELETE' }); setMsg('Restaurante eliminado correctamente.'); load(); }
-    catch (err) { setMsg(err.message); }
-  };
-  return <div className="page-grid">
-    <section className="card">
-      <h2>Gestión total de restaurantes</h2>
-      <p>Consulta, modifica o elimina restaurantes aliados. Este panel controla datos legales, ubicación, gestores, vigencia, estado y métricas.</p>
-      {msg && <p className="success-msg">{msg}</p>}
-      <div className="table-wrap"><table><thead><tr><th>Restaurante</th><th>Ruta</th><th>Dueño</th><th>Pedidos</th><th>Ventas</th><th>Estado</th><th>Acciones</th></tr></thead><tbody>{restaurants.map((r) => <tr key={r.id}><td>{r.name}<br/><small>{r.address}</small></td><td>/{r.slug}</td><td>{r.owner_name || 'Sin dueño registrado'}</td><td>{r.metrics?.orders || 0}</td><td>{money(r.metrics?.sales || 0)}</td><td><span className="status ok">{statusLabel(r.status)}</span></td><td><button className="tiny-btn" onClick={() => beginEdit(r)}><Edit3 size={14}/> Editar</button><button className="tiny-btn" onClick={() => remove(r)}><Trash2 size={14}/> Eliminar</button></td></tr>)}</tbody></table></div>
-    </section>
-    {editing && <section className="card"><h3>Modificar datos de restaurante</h3><p>Los campos vacíos conservan claridad con ejemplos. El slug define la ruta pública: <strong>/{editing.slug || 'restaurante'}</strong>.</p><div className="form-grid columns">{editableFields.map((k) => <label className="field" key={k}><span>{label(k)}</span>{k === 'status' ? <select value={editing[k]} onChange={(e) => setEditing({ ...editing, [k]: e.target.value })}><option value="active">Activo</option><option value="inactive">Inactivo</option></select> : <input type={inputType(k)} placeholder={placeholder(k)} value={editing[k] || ''} onChange={(e) => setEditing({ ...editing, [k]: e.target.value })} />}</label>)}<button className="primary-btn" onClick={saveEdit}><Save size={16}/> Guardar cambios</button><button className="ghost-btn" onClick={() => setEditing(null)}>Cancelar</button></div></section>}
-    <section className="card"><h3>Crear restaurante manualmente</h3><p>Usa este formulario cuando QuickLunch registre directamente un restaurante sin pasar por solicitud pública.</p><form className="form-grid columns" onSubmit={create}>{createFields.map((k) => <label className="field" key={k}><span>{label(k)}</span><input type={inputType(k)} placeholder={placeholder(k)} value={form[k] || ''} onChange={(e) => setForm({ ...form, [k]: e.target.value })} /></label>)}<button className="primary-btn">Crear restaurante y gestor</button></form></section>
+  if (loading) return <Loading/>;
+  return <div className="page-grid"><section className="card"><h3>Crear restaurante</h3><p className="muted">Todo está en español y con ejemplos. La dirección URL quedará como <b>/{form.slug || 'nombre-restaurante'}</b>.</p><form className="form-grid admin-form" onSubmit={saveCreate}>{LEGAL_FIELDS.map((f) => fieldFor(form, setForm, f)) }<button className="primary-btn">Crear restaurante y dueño</button>{msg && <p className={msg.includes('creado')||msg.includes('actualizado')?'success-msg':'error-msg'}>{msg}</p>}</form></section>
+    <section className="card"><h3>Restaurantes registrados</h3>{!restaurants.length && <Empty/>}{restaurants.map((r) => <article className="list-card" key={r.id}><div><h4>{r.name}</h4><p><b>Dirección URL:</b> /{r.slug} · <b>Estado:</b> {r.status} · <b>Puntos:</b> {r.prestige_points}</p><p>Liberado: {money(r.metrics?.settled)} · Procesado: {money(r.metrics?.processed)}</p></div><div className="actions"><Link className="secondary-btn" to={`/${r.slug}/preview`}><Search size={16}/> Vista cliente</Link><button className="secondary-btn" onClick={() => setEditing({ ...r })}><Edit3 size={16}/> Editar</button>{account.role === 'owner' && <button className="ghost-btn" onClick={() => setFees({ id:r.id, ...r.fees })}><DollarSign size={16}/> Comisión</button>}{account.role === 'owner' && <button className="danger-btn" onClick={() => remove(r)}><Trash2 size={16}/> Eliminar</button>}</div></article>)}</section>
+    {editing && <Modal title="Editar restaurante" onClose={() => setEditing(null)}><div className="form-grid admin-form">{REST_FIELDS.map((f) => fieldFor(editing, setEditing, f)) }<button className="primary-btn" onClick={saveEdit}>Guardar cambios</button></div></Modal>}
+    {fees && <Modal title="Comisión especial del restaurante" onClose={() => setFees(null)}><div className="form-grid"><Input label="Tarifa prepago por almuerzo" value={fees.online} onChange={(v) => setFees({ ...fees, online:Number(v) })}/><Input label="Tarifa pago en caja por almuerzo" value={fees.cash} onChange={(v) => setFees({ ...fees, cash:Number(v) })}/><Input label="Comisión porcentual" value={fees.commissionPercent} onChange={(v) => setFees({ ...fees, commissionPercent:Number(v) })}/><button className="primary-btn" onClick={saveFees}>Guardar comisión</button></div></Modal>}
   </div>;
 }
-
-function AdminApplications() {
-  const [apps, setApps] = useState([]); const [msg, setMsg] = useState('');
-  const load = () => api('/admin/applications').then(setApps);
-  useEffect(load, []);
-  const review = async (id, decision) => {
-    try { await api(`/admin/applications/${id}/review`, { method: 'POST', body: JSON.stringify({ decision, notes: decision === 'approved' ? 'Documentación aprobada para demo.' : 'Documentación incompleta.' }) }); setMsg(`Solicitud ${decision === 'approved' ? 'aprobada' : 'rechazada'}.`); load(); }
-    catch (err) { setMsg(err.message); }
-  };
-  return <section className="card"><h2>Aprobación legal de restaurantes</h2><p>Revisa documentos y datos enviados antes de activar el perfil en QuickLunch.</p>{msg && <p className="success-msg">{msg}</p>}<div className="cards-list">{apps.map((a) => <article className="application-card" key={a.id}><div><h3>{a.legal.name}</h3><p>{a.legal.address} · {a.legal.email}</p><small>NIT: {a.legal.nit || 'por validar'} · Matrícula mercantil: {a.legal.chamber_commerce || 'por validar'} · RUT: {a.legal.rut || 'por validar'}</small><ul className="mini-tags"><li>Sanitario: {a.legal.sanitary_concept || 'por validar'}</li><li>Bomberos: {a.legal.firefighter_certificate || 'por validar'}</li><li>Uso del suelo: {a.legal.land_use_concept || 'por validar'}</li></ul></div><span className={`status ${a.status === 'pending' ? 'warn' : 'ok'}`}>{statusLabel(a.status)}</span>{a.status === 'pending' && <div className="row-actions"><button className="primary-btn" onClick={() => review(a.id, 'approved')}><CheckCircle2 size={16} /> Aprobar</button><button className="danger-btn" onClick={() => review(a.id, 'rejected')}><XCircle size={16} /> Rechazar</button></div>}</article>)}</div></section>;
-}
-
 function AdminUsers() {
-  const [users, setUsers] = useState([]); const [msg, setMsg] = useState('');
-  const load = () => api('/admin/users').then(setUsers);
-  useEffect(load, []);
-  const patch = async (id, body) => { await api(`/admin/users/${id}`, { method: 'PATCH', body: JSON.stringify(body) }); setMsg('Usuario actualizado.'); load(); };
-  return <section className="card"><h2>Gestión de usuarios</h2><p>Datos no sensibles, actividad, pedidos, gastos, reportes, saldo, cupones y bloqueos.</p>{msg && <p className="success-msg">{msg}</p>}<div className="table-wrap"><table><thead><tr><th>Usuario</th><th>Rol</th><th>Correo</th><th>Pedidos</th><th>Gasto</th><th>Reportes</th><th>Saldo</th><th>Estado</th><th>Acciones</th></tr></thead><tbody>{users.map((u) => <tr key={u.id}><td>{u.full_name || u.username}<br/><small>@{u.username}</small></td><td>{u.role === 'customer' ? 'Cliente' : u.role === 'restaurant' ? 'Restaurante' : 'Administrador'}</td><td>{u.email}</td><td>{u.metrics?.orders || 0}</td><td>{money(u.metrics?.spent || 0)}</td><td>{u.metrics?.reports || 0}</td><td>{money(u.wallet_balance)}</td><td>{statusLabel(u.status)}</td><td><button className="tiny-btn" onClick={() => patch(u.id, { status: u.status === 'active' ? 'banned' : 'active' })}>{u.status === 'active' ? 'Banear' : 'Activar'}</button><button className="tiny-btn" onClick={() => patch(u.id, { wallet_balance: Number(u.wallet_balance || 0) + 5000 })}>+Saldo</button></td></tr>)}</tbody></table></div></section>;
-}
-
-function AdminAnalytics() {
-  const [data, setData] = useState(null);
-  useEffect(() => { api('/admin/analytics').then(setData); }, []);
-  if (!data) return <p>Cargando analítica...</p>;
-  return <div className="page-grid"><section className="card chart-card"><h2>Ventas por día</h2><ResponsiveContainer width="100%" height={280}><BarChart data={data.salesByDay}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="day" /><YAxis /><Tooltip formatter={(v) => money(v)} /><Bar dataKey="sales" radius={[8,8,0,0]} /></BarChart></ResponsiveContainer></section><section className="card chart-card"><h2>Métodos de pago</h2><ResponsiveContainer width="100%" height={260}><PieChart><Pie data={data.payments} dataKey="value" nameKey="name" outerRadius={90} label /><Tooltip /><Legend /></PieChart></ResponsiveContainer></section></div>;
-}
-
-function SupportPanel() {
-  const [threads, setThreads] = useState([]);
-  useEffect(() => { api('/support/threads').then(setThreads).catch(() => setThreads([])); }, []);
-  return <section className="card"><h2>Centro de soporte</h2><p>Conecta usuario, restaurante y QuickLunch para resolver conflictos de pagos, QR, demoras o cancelaciones.</p><div className="cards-list">{threads.map((t) => <article className="application-card" key={t.id}><MessageCircle /><div><h3>{t.subject}</h3><p>Orden #{t.order_id || 'N/A'} · Restaurante #{t.restaurant_id || 'N/A'}</p><small>{t.status} · {t.created_at}</small></div></article>)}{!threads.length && <p className="muted">No hay tickets todavía.</p>}</div></section>;
-}
-
-function RestaurantApp() {
-  const auth = useAuth();
-  const { slug } = useParams();
-  const [tab, setTab] = useState('login');
-  if (!auth.account || !['restaurant','admin'].includes(auth.account.role)) return <section className="split-auth"><div className="brand-panel"><Logo /><h1>Portal del restaurante</h1><p>Gestiona inventario, menú del día, pedidos en vivo, estadísticas, cupones y la apariencia pública de tu perfil.</p><p className="muted">Ruta actual: /{slug}</p></div><div><div className="tab-switch"><button className={tab==='login'?'active':''} onClick={() => setTab('login')}>Ingreso</button><button className={tab==='registro'?'active':''} onClick={() => setTab('registro')}>Registro legal</button></div>{tab === 'login' ? <LoginCard role="restaurant" title="Ingreso restaurante" subtitle="Solo gestores previamente aprobados por QuickLunch." onLogged={auth.save} allowRegister /> : <RestaurantApplyForm />}</div></section>;
-  const nav = [ { to: `/${slug}`, icon: LayoutDashboard, label: 'Inicio' }, { to: `/${slug}/inventario`, icon: ClipboardList, label: 'Inventario' }, { to: `/${slug}/menu`, icon: Coffee, label: 'Menú del día' }, { to: `/${slug}/pedidos`, icon: QrCode, label: 'Reservas en vivo' }, { to: `/${slug}/perfil`, icon: Sparkles, label: 'Personalización' }, { to: `/${slug}/soporte`, icon: MessageCircle, label: 'Soporte' } ];
-  return <Shell nav={nav} account={auth.account} logout={auth.logout}><Routes><Route index element={<RestaurantDashboard />} /><Route path="inventario" element={<InventoryPage />} /><Route path="menu" element={<MenuPage />} /><Route path="pedidos" element={<LiveOrders />} /><Route path="perfil" element={<ProfileDesigner />} /><Route path="soporte" element={<SupportPanel />} /></Routes></Shell>;
-}
-
-function RestaurantApplyForm() {
-  const fields = ['name','owner_name','owner_document','legal_representative','nit','chamber_commerce','rut','sanitary_concept','firefighter_certificate','land_use_concept','police_opening_notice','food_handler_certificates','personal_data_policy_url','address','phone','email','manager_username','manager_password','manager_full_name'];
-  const [form, setForm] = useState(Object.fromEntries(fields.map((f) => [f, '']))); const [msg, setMsg] = useState('');
-  const submit = async (e) => { e.preventDefault(); setMsg(''); try { await api('/restaurants/apply', { method: 'POST', body: JSON.stringify({ ...form, city: 'Cali' }) }); setMsg('Solicitud enviada a QuickLunch. El administrador puede aprobarla desde /admin/solicitudes.'); } catch (err) { setMsg(err.message); } };
-  return <form className="card form-grid columns" onSubmit={submit}><h2>Registro formal del restaurante</h2><p>Incluye información legal, sanitaria y operativa. Cada casilla tiene un ejemplo para evitar dudas.</p>{fields.map((f) => <label className="field" key={f}><span>{label(f)}</span><input type={inputType(f)} placeholder={placeholder(f)} value={form[f]} onChange={(e) => setForm({ ...form, [f]: e.target.value })} /></label>)}<button className="primary-btn">Enviar solicitud</button>{msg && <p className="success-msg">{msg}</p>}</form>;
-}
-
-function RestaurantDashboard() {
-  const [data, setData] = useState(null);
-  useEffect(() => { api('/restaurant/analytics').then(setData); }, []);
-  if (!data) return <p>Cargando restaurante...</p>;
-  return <div className="page-grid"><section className="hero-card"><div><span className="eyebrow">Operación restaurante</span><h1>Tu corrientazo, más rápido y medible</h1><p>QuickLunch te ayuda a preparar antes, reducir filas y entender qué piden tus clientes frecuentes.</p></div><ChefHat size={86} /></section><div className="stats-grid"><StatCard icon={ShoppingBag} label="Pedidos" value={data.summary.orders} /><StatCard icon={CircleDollarSign} label="Ventas" value={money(data.summary.sales)} /><StatCard icon={WalletCards} label="Ticket promedio" value={money(data.summary.avg_ticket)} /></div><section className="card"><h3>Recomendaciones IA para el restaurante</h3><ul className="check-list">{data.aiTips.map((t) => <li key={t}>{t}</li>)}</ul></section><section className="card"><h3>Clientes frecuentes</h3><div className="table-wrap"><table><thead><tr><th>Cliente</th><th>Visitas</th><th>Gasto</th></tr></thead><tbody>{data.frequent.map((c, i) => <tr key={i}><td>{c.customer_name}</td><td>{c.visits}</td><td>{money(c.spent)}</td></tr>)}</tbody></table></div></section></div>;
-}
-
-function InventoryPage() {
-  const empty = { category: 'protein', name: '', description: '', stock: 10, is_special: false, additional_cost: 0, price: 0 };
-  const [items, setItems] = useState([]);
-  const [form, setForm] = useState(empty);
-  const [msg, setMsg] = useState('');
-  const load = () => api('/restaurant/inventory').then(setItems);
-  useEffect(load, []);
-  const isPlate = form.category === 'complete_plate';
-  const submit = async (e) => {
-    e.preventDefault(); setMsg('');
-    try { await api('/restaurant/inventory', { method: 'POST', body: JSON.stringify(form) }); setForm(empty); setMsg('Elemento agregado al inventario.'); load(); }
-    catch (err) { setMsg(err.message); }
-  };
+  const { account } = useAuth();
+  const { data: rawUsers = [], loading, reload } = useLoad(() => api('/admin/users'), []);
+  const { data: rawRestaurants = [] } = useLoad(() => api('/admin/restaurants'), []);
+  const users = asArray(rawUsers); const restaurants = asArray(rawRestaurants);
+  const [edit, setEdit] = useState(null);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createMsg, setCreateMsg] = useState('');
+  const [newUser, setNewUser] = useState({ full_name:'', username:'', email:'', phone:'', password:'quick2026', role:'customer', role_label:'Cliente', status:'active', restaurant_id:'', wallet_balance:0 });
+  const allowedRoles = account.role === 'owner' ? ROLE_OPTIONS : ROLE_OPTIONS.filter((r) => !['owner','admin'].includes(r.value));
+  const save = async () => { try { const payload = account.role === 'owner' ? edit : { id: edit.id, status: edit.status, wallet_balance: edit.wallet_balance }; await api(`/admin/users/${edit.id}`, { method:'PATCH', body:JSON.stringify(payload) }); setEdit(null); reload(); } catch(e){ alert(e.message); } };
+  const create = async (e) => { e.preventDefault(); setCreateMsg(''); try { await api('/admin/users', { method:'POST', body:JSON.stringify({ ...newUser, restaurant_id: newUser.restaurant_id || null }) }); setCreateMsg('Usuario creado correctamente.'); setNewUser({ full_name:'', username:'', email:'', phone:'', password:'quick2026', role:'customer', role_label:'Cliente', status:'active', restaurant_id:'', wallet_balance:0 }); reload(); } catch(e){ setCreateMsg(e.message); } };
+  if (loading) return <Loading/>;
   return <div className="page-grid">
-    <section className="card"><h2>Creación de inventario</h2><p>Agrega opciones que luego usarás en el menú del día. Las proteínas, principios, acompañamientos y jugos no tienen precio individual; solo se marca costo adicional si son especiales. Los platos armados sí tienen precio propio.</p>{msg && <p className="success-msg">{msg}</p>}<form className="form-grid columns" onSubmit={submit}>
-      <label className="field"><span>Tipo de comida</span><select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value, is_special: false, additional_cost: 0, price: 0 })}>{Object.entries(CATEGORY_LABELS).map(([value, text]) => <option value={value} key={value}>{text}</option>)}</select></label>
-      <label className="field"><span>Nombre</span><input placeholder="Ej: Tilapia, lenteja, patacón, jugo de mora" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></label>
-      <label className="field"><span>Stock sugerido para menú</span><input type="number" min="0" placeholder="Ej: 10" value={form.stock} onChange={(e) => setForm({ ...form, stock: Number(e.target.value) })} /></label>
-      {isPlate ? <label className="field"><span>Precio del plato armado</span><input type="number" min="0" placeholder="Ej: 20000" value={form.price} onChange={(e) => setForm({ ...form, price: Number(e.target.value) })} /></label> : <label className="check"><input type="checkbox" checked={form.is_special} onChange={(e) => setForm({ ...form, is_special: e.target.checked, additional_cost: e.target.checked ? form.additional_cost : 0 })} /> Marcar como especial con costo adicional</label>}
-      {!isPlate && form.is_special && <label className="field"><span>Costo adicional</span><input type="number" min="0" placeholder="Ej: 5000 si tilapia sube de 15.000 a 20.000" value={form.additional_cost} onChange={(e) => setForm({ ...form, additional_cost: Number(e.target.value) })} /></label>}
-      <label className="field"><span>Descripción opcional</span><input placeholder="Ej: opción del menú normal o especial" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></label>
-      <button className="primary-btn">Agregar al inventario</button>
-    </form></section>
-    <section className="card"><h3>Inventario disponible</h3><div className="cards-list compact">{items.map((i) => <article className="menu-chip" key={i.id}><strong>{i.name}</strong><span>{categoryLabel(i.category)}</span><small>Stock sugerido: {i.stock || 0}</small>{i.category === 'complete_plate' ? <small>Precio: {money(i.price)}</small> : Number(i.is_special) ? <small>Especial: +{money(i.additional_cost)}</small> : <small>Menú normal: sin costo adicional</small>}</article>)}</div></section>
+    <section className="card"><div className="section-head"><div><h3>Gestión de usuarios y roles</h3><p>Cada usuario tiene nombre, usuario, rol y correo asociado para recuperación.</p></div><button className="primary-btn" onClick={() => setCreateOpen(!createOpen)}>{createOpen ? 'Ocultar creación' : 'Crear usuario'}</button></div>{createOpen && <form className="form-grid admin-form" onSubmit={create}><Input label="Nombre completo" placeholder="Ej: Ana Gómez" value={newUser.full_name} onChange={(v)=>setNewUser({...newUser,full_name:v})}/><Input label="Usuario" placeholder="Ej: ana_gomez" value={newUser.username} onChange={(v)=>setNewUser({...newUser,username:v})}/><Input label="Correo para recuperación" placeholder="ana@email.com" value={newUser.email} onChange={(v)=>setNewUser({...newUser,email:v})}/><Input label="Celular" placeholder="3001234567" value={newUser.phone} onChange={(v)=>setNewUser({...newUser,phone:v})}/><Input type="password" label="Contraseña inicial" placeholder="Mínimo 6 caracteres" value={newUser.password} onChange={(v)=>setNewUser({...newUser,password:v})}/><Select label="Rol" value={newUser.role} onChange={(v)=>setNewUser({...newUser,role:v,role_label:ROLE_LABELS[v]||v})}>{allowedRoles.map((r)=><option key={r.value} value={r.value}>{r.label}</option>)}</Select><Input label="Nombre visible del rol" value={newUser.role_label} onChange={(v)=>setNewUser({...newUser,role_label:v})}/><Select label="Estado" value={newUser.status} onChange={(v)=>setNewUser({...newUser,status:v})}>{STATUS_OPTIONS.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</Select>{['restaurant_owner','restaurant_staff'].includes(newUser.role)&&<Select label="Restaurante asociado" value={newUser.restaurant_id} onChange={(v)=>setNewUser({...newUser,restaurant_id:v})}><option value="">Selecciona restaurante</option>{restaurants.map(r=><option key={r.id} value={r.id}>{r.name} /{r.slug}</option>)}</Select>}<Input label="Saldo exacto inicial" value={newUser.wallet_balance} onChange={(v)=>setNewUser({...newUser,wallet_balance:Number(v)})}/><button className="primary-btn">Guardar nuevo usuario</button>{createMsg && <p className={createMsg.includes('correctamente')?'success-msg':'error-msg'}>{createMsg}</p>}</form>}</section>
+    <section className="card"><h3>Usuarios registrados</h3><Table headers={["Nombre","Usuario","Correo","Rol","Estado","Saldo","Pedidos","Acciones"]} rows={users.map((u) => [u.full_name || 'Sin nombre', u.username, u.email || 'Sin correo', u.role_label || ROLE_LABELS[u.role], u.status, money(u.wallet_balance), u.metrics?.orders || 0, <button className="secondary-btn" onClick={() => setEdit({ id:u.id, status:u.status, wallet_balance:u.wallet_balance, role:u.role, role_label:u.role_label, restaurant_id:u.restaurant_id || '' })}>Editar</button>])}/></section>
+    {edit && <Modal title="Editar usuario" onClose={() => setEdit(null)}><div className="form-grid"><Select label="Estado" value={edit.status} onChange={(v) => setEdit({ ...edit, status:v })}>{STATUS_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}</Select><Input label="Saldo exacto en la app" value={edit.wallet_balance} onChange={(v) => setEdit({ ...edit, wallet_balance:Number(v) })}/>{account.role === 'owner' && <><Select label="Rol" value={edit.role} onChange={(v) => setEdit({ ...edit, role:v, role_label:ROLE_LABELS[v] || v })}>{ROLE_OPTIONS.map(({value,label}) => <option key={value} value={value}>{label}</option>)}</Select><Input label="Nombre visible del rol" value={edit.role_label} onChange={(v) => setEdit({ ...edit, role_label:v })}/><Select label="Restaurante asociado" value={edit.restaurant_id} onChange={(v) => setEdit({ ...edit, restaurant_id:v })}><option value="">Sin restaurante</option>{restaurants.map(r => <option key={r.id} value={r.id}>{r.name} /{r.slug}</option>)}</Select></>}<button className="primary-btn" onClick={save}>Guardar</button></div></Modal>}
   </div>;
 }
-
-function MenuPage() {
-  const [inventory, setInventory] = useState([]);
-  const [menus, setMenus] = useState([]);
-  const [selected, setSelected] = useState([]);
-  const [mode, setMode] = useState('customizable');
-  const [basePrice, setBasePrice] = useState(BASE_LUNCH_PRICE);
-  const [msg, setMsg] = useState('');
-  const load = () => { api('/restaurant/inventory').then(setInventory); api('/restaurant/menus').then(setMenus); };
-  useEffect(load, []);
-  const toggle = (item) => {
-    setSelected((prev) => prev.find((x) => x.inventory_item_id === item.id)
-      ? prev.filter((x) => x.inventory_item_id !== item.id)
-      : [...prev, { inventory_item_id: item.id, category: item.category, name: item.name, stock: item.stock || 10, remaining: item.stock || 10, price_delta: item.category === 'complete_plate' ? Number(item.price || 0) : Number(item.is_special ? item.additional_cost : 0), plate: { is_special: Boolean(item.is_special), base_price: basePrice, fixed_plate_price: Number(item.price || 0) } }]);
-  };
-  const updateSelected = (id, patch) => setSelected((prev) => prev.map((x) => x.inventory_item_id === id ? { ...x, ...patch, remaining: patch.stock ?? x.remaining } : x));
-  const publish = async () => {
-    setMsg('');
-    if (!selected.length) { setMsg('Selecciona al menos un elemento del inventario.'); return; }
-    await api('/restaurant/menus', { method: 'POST', body: JSON.stringify({ menu_date: new Date().toISOString().slice(0,10), mode, title: 'Menú del día QuickLunch', notes: `Precio base personalizable: ${basePrice}`, status: 'published', items: selected.map((x) => ({ ...x, plate: { ...(x.plate || {}), base_price: basePrice } })) }) });
-    setSelected([]); setMsg('Menú publicado correctamente.'); load();
-  };
-  return <div className="page-grid"><section className="card"><h2>Menú del día</h2><p>Recomendación QuickLunch: publicar menú personalizable. El usuario paga el precio base del corrientazo y solo suma costos adicionales si elige una opción especial. Si publicas platos armados, cada plato usa su precio propio.</p>{msg && <p className="success-msg">{msg}</p>}<div className="form-grid columns"><label className="field compact"><span>Modo de publicación</span><select value={mode} onChange={(e) => setMode(e.target.value)}><option value="customizable">Personalizable recomendado</option><option value="fixed_plates">Platos armados</option><option value="mixed">Mixto</option></select></label><label className="field compact"><span>Precio base del corrientazo personalizable</span><input type="number" min="0" value={basePrice} onChange={(e) => setBasePrice(Number(e.target.value))} /></label></div><div className="cards-list compact">{inventory.map((item) => { const chosen = selected.find((x) => x.inventory_item_id === item.id); return <button type="button" className={`menu-chip ${chosen ? 'selected' : ''}`} key={item.id} onClick={() => toggle(item)}><strong>{item.name}</strong><span>{categoryLabel(item.category)}</span>{item.category === 'complete_plate' ? <small>Precio propio: {money(item.price)}</small> : Number(item.is_special) ? <small>Especial: +{money(item.additional_cost)}</small> : <small>Menú normal: +{money(0)}</small>}<small>Stock sugerido: {item.stock || 10}</small></button>; })}</div>{selected.length > 0 && <section className="card"><h3>Stock de lo que publicarás hoy</h3><div className="form-grid columns">{selected.map((x) => <label className="field" key={x.inventory_item_id}><span>{x.name} · {categoryLabel(x.category)}</span><input type="number" min="0" value={x.stock} onChange={(e) => updateSelected(x.inventory_item_id, { stock: Number(e.target.value) })} /></label>)}</div></section>}<button className="primary-btn" onClick={publish}>Publicar menú de hoy</button></section><section className="card"><h3>Menús publicados</h3>{menus.map((m) => <article className="application-card" key={m.id}><Coffee /><div><h3>{m.title}</h3><p>{m.menu_date} · {modeLabel(m.mode)} · {statusLabel(m.status)}</p><small>{m.items?.map((i) => `${i.name}${itemExtra(i) ? ` (+${money(itemExtra(i))})` : ''}`).join(', ')}</small></div></article>)}</section></div>;
+function AdminCoupons() {
+  const { account } = useAuth();
+  const { data: rawCoupons=[], loading, reload } = useLoad(()=>api('/admin/coupons'),[]);
+  const { data: rawUsers=[] } = useLoad(()=>api('/admin/users'),[]);
+  const { data: rawRestaurants=[] } = useLoad(()=>api('/admin/restaurants'),[]);
+  const coupons=asArray(rawCoupons), users=asArray(rawUsers), restaurants=asArray(rawRestaurants);
+  const [form,setForm]=useState({ code:'', name:'', starts_at:'', ends_at:'', unlimited_uses:true, max_uses:100, effect_scope:'app', effect_type:'credit_fixed', effect_value:5000, coverage_restaurants:[], auto_apply:false, all_users:true, user_ids:[], is_promotion:true });
+  const [msg,setMsg]=useState('');
+  const create=async(e)=>{ e.preventDefault(); setMsg(''); try{ await api('/admin/coupons',{method:'POST',body:JSON.stringify(form)}); setMsg('Cupón creado correctamente.'); setForm({...form,code:'',name:''}); reload(); }catch(err){ setMsg(err.message); } };
+  if(loading)return <Loading/>;
+  return <div className="page-grid"><section className="card"><h3>Cupones globales del owner/admin</h3><p>Los créditos de toda la app los paga QuickLunch. Si el beneficio se aplica automáticamente, se redime en la cuenta de los usuarios seleccionados.</p><form className="form-grid admin-form" onSubmit={create}><Input label="ID / nombre del cupón" value={form.code} onChange={(v)=>setForm({...form,code:v.toUpperCase(),name:v})} placeholder="Ej: QL5000"/><Input label="Nombre visible" value={form.name} onChange={(v)=>setForm({...form,name:v})} placeholder="Ej: Saldo de bienvenida"/><Input type="datetime-local" label="Inicio de vigencia" value={form.starts_at} onChange={(v)=>setForm({...form,starts_at:v})}/><Input type="datetime-local" label="Fin de vigencia" value={form.ends_at} onChange={(v)=>setForm({...form,ends_at:v})}/><Select label="Usos ilimitados" value={form.unlimited_uses?'yes':'no'} onChange={(v)=>setForm({...form,unlimited_uses:v==='yes'})}>{YES_NO_OPTIONS.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</Select>{!form.unlimited_uses && <Input label="Cantidad de usos" value={form.max_uses} onChange={(v)=>setForm({...form,max_uses:Number(v)})}/>}<Select label="Cobertura" value={form.effect_scope} onChange={(v)=>setForm({...form,effect_scope:v})}><option value="app">Toda la app</option><option value="restaurant">Un restaurante o grupo</option></Select>{form.effect_scope==='restaurant' && <Field label="Restaurantes cubiertos"><select multiple value={form.coverage_restaurants.map(String)} onChange={(e)=>setForm({...form,coverage_restaurants:[...e.target.selectedOptions].map(o=>Number(o.value))})}>{restaurants.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select></Field>}<Select label="Efecto" value={form.effect_type} onChange={(v)=>setForm({...form,effect_type:v})}><option value="credit_fixed">Créditos</option><option value="discount_fixed">Descuento fijo</option><option value="discount_percent">Descuento %</option><option value="service_free">Servicio gratis</option><option value="service_percent">Descuento en servicio %</option></Select><Input label="Valor del efecto" value={form.effect_value} onChange={(v)=>setForm({...form,effect_value:Number(v)})}/><Select label="Aplicación automática" value={form.auto_apply?'yes':'no'} onChange={(v)=>setForm({...form,auto_apply:v==='yes'})}>{YES_NO_OPTIONS.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</Select>{form.auto_apply && <Select label="Beneficiar a todos" value={form.all_users?'yes':'no'} onChange={(v)=>setForm({...form,all_users:v==='yes'})}>{YES_NO_OPTIONS.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</Select>}{form.auto_apply && !form.all_users && <Field label="Usuarios beneficiados"><select multiple value={form.user_ids.map(String)} onChange={(e)=>setForm({...form,user_ids:[...e.target.selectedOptions].map(o=>Number(o.value))})}>{users.filter(u=>u.role==='customer').map(u=><option key={u.id} value={u.id}>{u.full_name || u.username}</option>)}</select></Field>}<button className="primary-btn" disabled={account.role!=='owner'&&form.auto_apply}>Crear beneficio</button>{msg&&<p className={msg.includes('correctamente')?'success-msg':'error-msg'}>{msg}</p>}</form></section><section className="card"><h3>Beneficios creados</h3>{!coupons.length&&<Empty text="No hay cupones todavía."/>}{coupons.map(c=><article className="coupon" key={c.id}><b>{c.code}</b><p>{c.name || c.description} · {c.restaurant_name || 'Toda QuickLunch'} · Creado por {c.created_by}</p><span>{c.promotionBadge || c.effect_type}</span></article>)}</section></div>;
 }
 
-function LiveOrders() {
-  const [orders, setOrders] = useState([]);
-  const load = () => api('/restaurant/orders/live').then(setOrders);
-  useEffect(() => { load(); const timer = setInterval(load, 5000); return () => clearInterval(timer); }, []);
-  const status = async (id, value) => { await api(`/restaurant/orders/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status: value }) }); load(); };
-  return <section className="card"><h2>Simulación de reservas en vivo</h2><p>Debe mantenerse abierta en hora pico. Los pedidos entran por orden y permiten preparar antes de la llegada del cliente.</p><div className="kanban">{orders.map((o) => <article className="order-card" key={o.id}><div className="order-top"><strong>{o.public_code}</strong><span className={`status ${o.status}`}>{statusLabel(o.status)}</span></div><p><Clock size={15} /> {o.pickup_slot}</p><p><UserRound size={15} /> {o.customer_name}</p><ul>{o.items.map((i, idx) => <li key={idx}>{i.name || i.category}</li>)}</ul><div className="row-actions"><button onClick={() => status(o.id, 'preparing')}>Preparación</button><button onClick={() => status(o.id, 'ready')}>Listo</button><button onClick={() => status(o.id, 'claimed')}>QR reclamado</button><button onClick={() => status(o.id, 'delayed')}>Demora</button><button onClick={() => status(o.id, 'cancelled')}>Cancelar</button></div></article>)}</div>{!orders.length && <p className="muted">Aún no hay pedidos para este restaurante.</p>}</section>;
+function AdminApplications() { const { data = [], loading, reload } = useLoad(() => api('/admin/applications'), []); const decide = async (id,status) => { await api(`/admin/applications/${id}`, { method:'PATCH', body:JSON.stringify({ status }) }); reload(); }; if (loading) return <Loading/>; return <section className="card"><h3>Solicitudes legales de restaurantes</h3>{data.map((a) => <article className="list-card" key={a.id}><div><h4>{a.legal?.name}</h4><p>{a.legal?.address} · {a.legal?.nit}</p><p>{a.status}</p></div><div className="actions"><button className="primary-btn" onClick={() => decide(a.id,'approved')}>Aprobar</button><button className="danger-btn" onClick={() => decide(a.id,'rejected')}>Rechazar</button></div></article>)}</section>; }
+function AdminSettings() { const { account } = useAuth(); const { data, loading, reload } = useLoad(() => api('/settings'), []); const [fees, setFees] = useState(null); useEffect(() => { if (data) setFees(data.fees); }, [data]); const save = async () => { await api('/admin/settings', { method:'PATCH', body:JSON.stringify({ fees }) }); reload(); }; if (loading || !fees) return <Loading/>; return <section className="card"><h3>Comisiones base QuickLunch</h3><p>Solo el owner puede cambiar las tarifas globales. Cada restaurante nace con estas tarifas, salvo que se le configure una comisión especial.</p>{account.role !== 'owner' && <p className="error-msg">Tu rol puede ver esta sección, pero no modificar las comisiones.</p>}<div className="form-grid"><Input label="Prepago por almuerzo" value={fees.online} onChange={(v) => setFees({ ...fees, online:Number(v) })}/><Input label="Pago en caja por almuerzo" value={fees.cash} onChange={(v) => setFees({ ...fees, cash:Number(v) })}/><Input label="Comisión porcentual" value={fees.commissionPercent} onChange={(v) => setFees({ ...fees, commissionPercent:Number(v) })}/><button className="primary-btn" disabled={account.role !== 'owner'} onClick={save}>Guardar tarifas base</button></div></section>; }
+
+function Modal({ title, children, onClose }) { return <div className="modal-backdrop"><div className="modal card"><button className="close" onClick={onClose}>×</button><h3>{title}</h3>{children}</div></div>; }
+
+// RESTAURANT
+function RestaurantApp() {
+  const { slug } = useParams(); const { account, booting } = useAuth();
+  useEffect(() => { if (slug) localStorage.setItem('ql_restaurant_slug', slug); }, [slug]);
+  if (booting) return <Loading/>;
+  if (!account || !canRestaurant(account.role)) return <LoginCard target="restaurant" title={`Gestión del restaurante${slug ? ` /${slug}` : ''}`} subtitle="Ingreso para dueños, cajeros y operadores autorizados por el restaurante." />;
+  const nav = [{ to:`/${slug || 'restaurante'}`, icon:LayoutDashboard, label:'Inicio' }, { to:`/${slug || 'restaurante'}/inventario`, icon:PackagePlus, label:'Inventario' }, { to:`/${slug || 'restaurante'}/menu`, icon:ChefHat, label:'Menú del día' }, { to:`/${slug || 'restaurante'}/pedidos`, icon:QrCode, label:'Pedidos y QR' }];
+  if (canFullRestaurant(account.role)) nav.push({ to:`/${slug || 'restaurante'}/perfil`, icon:Settings, label:'Perfil y horarios' }, { to:`/${slug || 'restaurante'}/preview`, icon:Search, label:'Vista cliente' }, { to:`/${slug || 'restaurante'}/cupones`, icon:Gift, label:'Cupones y promos' }, { to:`/${slug || 'restaurante'}/equipo`, icon:UsersRound, label:'Equipo' }, { to:`/${slug || 'restaurante'}/soporte`, icon:MessageCircle, label:'Soporte' });
+  return <Shell nav={nav}><Routes><Route index element={<RestaurantDashboard/>}/><Route path="inventario" element={<Inventory/>}/><Route path="menu" element={<MenuBuilder/>}/><Route path="pedidos" element={<LiveOrders/>}/><Route path="perfil" element={<RestaurantProfile/>}/><Route path="preview" element={<RestaurantPreview/>}/><Route path="cupones" element={<RestaurantCoupons/>}/><Route path="equipo" element={<RestaurantStaff/>}/><Route path="soporte" element={<SupportPanel/>}/></Routes></Shell>;
+}
+function useRestaurant() { return useLoad(() => api('/restaurant/me'), []); }
+function RestaurantDashboard() { const { account } = useAuth(); const { data: me, loading } = useRestaurant(); const { data: analytics, loading: l2 } = useLoad(() => canFullRestaurant(account.role) ? api('/restaurant/analytics') : Promise.resolve(null), [account.role]); if (loading || l2) return <Loading/>; if (!me?.restaurant) return <Empty text="No hay restaurante asociado."/>; const r = me.restaurant; return <div className="page-grid"><section className="hero-card"><div><span className="eyebrow">/{r.slug}</span><h1>{r.name}</h1><p>{canFullRestaurant(account.role) ? 'Tienes acceso completo al restaurante.' : 'Rol operativo: puedes gestionar menú, pedidos y QR, sin ver ingresos ni estadísticas.'}</p></div>{r.design?.logoUrl ? <img className="hero-logo" src={asset(r.design.logoUrl)}/> : <ChefHat size={80}/>}</section>{canFullRestaurant(account.role) && analytics && <><div className="stats-grid"><Stat icon={ShoppingBag} label="Pedidos" value={analytics.summary.orders}/><Stat icon={DollarSign} label="Liberado por QR" value={money(analytics.summary.released)}/><Stat icon={WalletCards} label="Retenido hasta QR" value={money(analytics.pendingHeld)}/><Stat icon={Star} label="Puntos" value={analytics.restaurant.prestige_points}/></div><section className="card"><h3>IA operativa integrada</h3><p>Monitorea pedidos, pagos retenidos, QR reclamados, incidencias y preferencias del restaurante.</p><ul className="check-list">{analytics.aiTips.map((t) => <li key={t}>{t}</li>)}</ul></section></>}</div>; }
+function Inventory() {
+  const { data: rawItems = [], loading, reload } = useLoad(() => api('/restaurant/inventory'), []); const items = asArray(rawItems);
+  const [form, setForm] = useState({ category:'protein', name:'', description:'', stock:0, is_special:false, additional_cost:0, price:0, image_url:'' }); const [suggestions, setSuggestions] = useState([]); const [msg,setMsg]=useState('');
+  const uploadFile = async (file) => { const fd = new FormData(); fd.append('image', file); const res = await api('/restaurant/upload', { method:'POST', body: fd }); setForm({ ...form, image_url: res.url, image_source:'subida' }); };
+  const suggest = async () => { setMsg(''); if (!form.name) return setMsg('Escribe el nombre del plato para buscar imágenes.'); try { const r = await api(`/images/suggest?q=${encodeURIComponent(form.name)}&description=${encodeURIComponent(form.description || '')}`); setSuggestions(asArray(r)); } catch(e) { setMsg(e.message); } };
+  const create = async (e) => { e.preventDefault(); setMsg(''); try { await api('/restaurant/inventory', { method:'POST', body:JSON.stringify(form) }); setForm({ category:'protein', name:'', description:'', stock:0, is_special:false, additional_cost:0, price:0, image_url:'' }); setSuggestions([]); reload(); } catch(e) { setMsg(e.message); } };
+  if (loading) return <Loading/>; const grouped = items.reduce((a,x) => ({...a,[x.category]:[...(a[x.category]||[]),x]}),{});
+  return <div className="page-grid"><section className="card"><h3>Crear alimento o plato</h3><p>Los componentes no piden precio. Solo los especiales piden costo adicional. Los platos armados sí tienen precio propio.</p><form className="form-grid" onSubmit={create}><Select label="Tipo" value={form.category} onChange={(v)=>setForm({...form,category:v,is_special:false,additional_cost:0,price:0})}>{Object.entries(CATEGORY_LABELS).map(([k,v])=><option key={k} value={k}>{v}</option>)}</Select><Input label="Nombre" placeholder="Ej: Tilapia, lentejas, sopa de verduras" value={form.name} onChange={(v)=>setForm({...form,name:v})}/><Input label="Descripción" value={form.description} onChange={(v)=>setForm({...form,description:v})}/><Input label="Stock base" value={form.stock} onChange={(v)=>setForm({...form,stock:Number(v)})}/>{form.category !== 'complete_plate' && <Select label="¿Es especial?" value={form.is_special ? 'yes' : 'no'} onChange={(v)=>setForm({...form,is_special:v==='yes', additional_cost:v==='yes'?form.additional_cost:0})}>{YES_NO_OPTIONS.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</Select>}{form.category !== 'complete_plate' && form.is_special && <Input label="Costo adicional" value={form.additional_cost} onChange={(v)=>setForm({...form,additional_cost:Number(v)})}/>} {form.category === 'complete_plate' && <Input label="Precio propio del plato armado" value={form.price} onChange={(v)=>setForm({...form,price:Number(v)})}/>}<Field label="Imagen opcional"><input type="file" accept="image/*" onChange={(e)=> e.target.files?.[0] && uploadFile(e.target.files[0])}/></Field><button type="button" className="secondary-btn" onClick={suggest}><Search size={16}/> Buscar 5 imágenes acordes</button>{suggestions.length>0 && <div className="suggestions">{suggestions.map((s,i)=><button type="button" key={s.url} className="suggestion" onClick={()=>setForm({...form,image_url:s.url,image_source:'internet'})}><img src={s.url} onError={safeImg}/><span>Usar imagen {i+1}<small>{s.source}</small></span></button>)}</div>}{form.image_url && <img className="preview-img" src={asset(form.image_url)} onError={safeImg}/>}<button className="primary-btn">Guardar alimento</button>{msg && <p className={msg.includes('guard')?'success-msg':'error-msg'}>{msg}</p>}</form></section><section className="card"><h3>Inventario</h3>{Object.entries(grouped).map(([cat,arr])=><div key={cat}><h4>{categoryLabel(cat)}</h4>{arr.map((it)=><article className="ingredient-row" key={it.id}>{it.image_url ? <img src={asset(it.image_url)} onError={safeImg}/> : <ChefHat/>}<div><b>{it.name}</b><p>{it.is_special ? `Especial +${money(it.additional_cost)}` : it.category==='complete_plate' ? money(it.price) : 'Componente normal'} · Stock {it.stock}</p></div></article>)}</div>)}</section></div>;
+}
+function MenuBuilder() { const { data: inv = [], loading } = useLoad(() => api('/restaurant/inventory'), []); const [form,setForm]=useState({ menu_date:today(), mode:'mixed', title:'Menú del día', base_price:15000, sell_soup_separately:true, soup_price:6000, sell_tray_separately:true, tray_price:13000, max_lunches_per_order:10, items:[] }); const [msg,setMsg]=useState(''); const toggle=(it)=>{ const exists=form.items.find(x=>x.inventory_item_id===it.id); setForm({...form,items: exists?form.items.filter(x=>x.inventory_item_id!==it.id):[...form.items,{ inventory_item_id:it.id, category:it.category, name:it.name, stock:it.stock, price_delta:it.additional_cost, price:it.price, is_special:it.is_special, image_url:it.image_url }]});}; const save=async()=>{ await api('/restaurant/menus',{method:'POST',body:JSON.stringify({...form,status:'published'})}); setMsg('Menú publicado.');}; if(loading)return <Loading/>; return <section className="card"><h3>Publicar menú del día</h3><div className="form-grid"><Input label="Fecha" type="date" value={form.menu_date} onChange={(v)=>setForm({...form,menu_date:v})}/><Input label="Título" value={form.title} onChange={(v)=>setForm({...form,title:v})}/><Input label="Precio almuerzo completo" value={form.base_price} onChange={(v)=>setForm({...form,base_price:Number(v)})}/><label className="check-row"><input type="checkbox" checked={form.sell_soup_separately} onChange={(e)=>setForm({...form,sell_soup_separately:e.target.checked})}/> Vender sopa por separado con jugo</label>{form.sell_soup_separately && <Input label="Precio sopa sola" value={form.soup_price} onChange={(v)=>setForm({...form,soup_price:Number(v)})}/>}<label className="check-row"><input type="checkbox" checked={form.sell_tray_separately} onChange={(e)=>setForm({...form,sell_tray_separately:e.target.checked})}/> Vender bandeja sola con jugo</label>{form.sell_tray_separately && <Input label="Precio bandeja sola" value={form.tray_price} onChange={(v)=>setForm({...form,tray_price:Number(v)})}/>}<Input label="Máximo almuerzos por pedido" value={form.max_lunches_per_order} onChange={(v)=>setForm({...form,max_lunches_per_order:Math.min(10,Number(v))})}/></div><h4>Selecciona componentes y platos armados disponibles</h4><div className="inventory-pick">{inv.map((it)=><button key={it.id} className={form.items.find(x=>x.inventory_item_id===it.id)?'selected':''} onClick={()=>toggle(it)}>{it.image_url ? <img src={asset(it.image_url)} onError={safeImg}/> : <ChefHat/>}<span>{it.name}</span><small>{categoryLabel(it.category)} {it.is_special?`+${money(it.additional_cost)}`:''}</small></button>)}</div><button className="primary-btn" onClick={save}>Publicar menú</button>{msg && <p className="notice">{msg}</p>}</section>; }
+function LiveOrders() { const { data, loading, reload } = useLoad(() => api('/restaurant/orders/live'), []); const [scanMsg,setScanMsg]=useState(''); const setStatus=async(id,status)=>{ await api(`/restaurant/orders/${id}/status`,{method:'PATCH',body:JSON.stringify({status})}); reload();}; const scan=async(text)=>{ try { const r=await api('/restaurant/orders/scan',{method:'POST',body:JSON.stringify({qr_text:text})}); setScanMsg(r.message); reload(); } catch(e){ setScanMsg(e.message); } }; if(loading)return <Loading/>; return <div className="page-grid"><section className="card"><h3>Escáner QR funcional</h3><QrScanner onScan={scan}/>{scanMsg && <p className="notice">{scanMsg}</p>}</section><section className="card"><h3>Reservas agrupadas por franja</h3>{Object.keys(data.groups||{}).length===0 && <Empty text="No hay pedidos para hoy."/>}{Object.entries(data.groups||{}).map(([slot,orders])=><div className="slot-group" key={slot}><h4>{slot}</h4>{orders.map((o)=><article className="order-card" key={o.id}><div><b>{o.public_code}</b> <Badge>{orderStatus(o.status)}</Badge><p>{o.customer_name} · {o.lunch_count} almuerzo(s) · {o.payment_method==='cash'?'Cobrar en caja':'Pago previo retenido'} · {money(o.total)}</p><ol>{o.items.map((l,i)=><li key={i}>{l.label || l.type}: {money(l.total)} {l.components?.map(c=>c.name).join(', ')}</li>)}</ol></div><div className="actions">{o.status==='claimed'?<Badge tone="success">Entregado: QR usado sin validez</Badge>:<><button onClick={()=>setStatus(o.id,'preparing')}>Preparando</button><button onClick={()=>setStatus(o.id,'ready')}>Listo</button><button onClick={()=>setStatus(o.id,'delayed')}>Demora</button><button className="danger-btn" onClick={()=>setStatus(o.id,'cancelled')}>Cancelar</button></>}</div></article>)}</div>)}</section></div>; }
+function QrScanner({ onScan }) { const videoRef=useRef(null); const [manual,setManual]=useState(''); const [active,setActive]=useState(false); useEffect(()=>{ if(!active) return; let stream; let timer; const start=async()=>{ try { stream=await navigator.mediaDevices.getUserMedia({ video:{ facingMode:'environment' } }); videoRef.current.srcObject=stream; await videoRef.current.play(); if('BarcodeDetector' in window){ const detector=new BarcodeDetector({ formats:['qr_code'] }); timer=setInterval(async()=>{ const codes=await detector.detect(videoRef.current).catch(()=>[]); if(codes[0]?.rawValue){ onScan(codes[0].rawValue); setActive(false); } },900); } } catch(e){ setManual(''); } }; start(); return()=>{ clearInterval(timer); stream?.getTracks().forEach(t=>t.stop());}; },[active]); return <div className="scanner"><button className="secondary-btn" onClick={()=>setActive(!active)}><Camera size={16}/> {active?'Detener cámara':'Abrir cámara'}</button>{active && <video ref={videoRef} className="scan-video"/>}<div className="inline-form"><input value={manual} onChange={(e)=>setManual(e.target.value)} placeholder="Pega URL o código QL-... si la cámara no lee"/><button onClick={()=>manual && onScan(manual)}>Validar</button></div></div>; }
+function RestaurantProfile() { const { data: me, loading, reload }=useRestaurant(); const [form,setForm]=useState(null); useEffect(()=>{ if(me?.restaurant) setForm({ profile:me.restaurant.profile||{}, design:me.restaurant.design||{}, settings:me.restaurant.settings||{} });},[me]); const upload=async(file,key)=>{ const fd=new FormData(); fd.append('image',file); const r=await api('/restaurant/upload',{method:'POST',body:fd}); setForm({...form,design:{...form.design,[key]:r.url}});}; const save=async()=>{ await api('/restaurant/profile',{method:'PUT',body:JSON.stringify(form)}); reload();}; if(loading||!form)return <Loading/>; const range=form.settings?.pickup?.ranges?.[0]||{start:'11:00',end:'14:00',intervalMinutes:10,capacity:10}; const setRange=(k,v)=>setForm({...form,settings:{...form.settings,pickup:{...(form.settings.pickup||{}),ranges:[{...range,[k]:v}]}}}); return <section className="card"><div className="section-head"><div><h3>Personalización, logo, banner y horarios</h3><p>Sube imágenes locales como en una red social. No necesitas URL.</p></div><Badge>Usa la pestaña Vista cliente sin abrir otra URL</Badge></div><div className="form-grid"><Input label="Descripción pública" value={form.profile.description} onChange={(v)=>setForm({...form,profile:{...form.profile,description:v}})}/><Field label="Logo del restaurante"><input type="file" accept="image/*" onChange={(e)=>e.target.files?.[0]&&upload(e.target.files[0],'logoUrl')}/></Field><Field label="Banner del restaurante"><input type="file" accept="image/*" onChange={(e)=>e.target.files?.[0]&&upload(e.target.files[0],'bannerUrl')}/></Field><Input label="Inicio atención" type="time" value={range.start} onChange={(v)=>setRange('start',v)}/><Input label="Fin atención" type="time" value={range.end} onChange={(v)=>setRange('end',v)}/><Select label="Intervalo de reservas" value={String(range.intervalMinutes)} onChange={(v)=>setRange('intervalMinutes',Number(v))}><option value="10">Cada 10 minutos</option><option value="15">Cada 15 minutos</option><option value="20">Cada 20 minutos</option><option value="30">Cada 30 minutos</option></Select><Input label="Cupo por intervalo" value={range.capacity} onChange={(v)=>setRange('capacity',Number(v))}/><button className="primary-btn" onClick={save}>Guardar perfil</button></div>{form.design.logoUrl&&<img className="preview-img" src={asset(form.design.logoUrl)} onError={safeImg}/>} {form.design.bannerUrl&&<img className="banner-preview" src={asset(form.design.bannerUrl)} onError={safeImg}/>}</section>; }
+function RestaurantPreview() { const { data: me, loading } = useRestaurant(); const restaurant = me?.restaurant; if (loading) return <Loading/>; if (!restaurant) return <Empty text="No hay restaurante para previsualizar."/>; return <div className="page-grid"><section className="card"><h3>Previsualización como cliente</h3><p>Así se verá tu restaurante dentro de la app móvil de QuickLunch.</p><div className="mobile-app preview-phone"><div className="mobile-page"><div className="restaurant-banner">{restaurant.design?.bannerUrl ? <img src={asset(restaurant.design.bannerUrl)} onError={safeImg}/> : <div className="food-placeholder"><ChefHat/></div>}<div className="preview-title">{restaurant.design?.logoUrl ? <img className="preview-logo" src={asset(restaurant.design.logoUrl)} onError={safeImg}/> : <ChefHat/>}<div><h1>{restaurant.name}</h1><p>{restaurant.profile?.description || restaurant.address}</p><Badge>{restaurant.prestige_points || 0} puntos</Badge></div></div></div><section className="card"><h3>Experiencia del cliente</h3><p>El cliente verá el banner, logo, descripción, menú disponible, horarios de recogida y cupos activos.</p><p className="notice">Previsualización integrada en esta misma ubicación. No redirige al cliente real.</p></section></div></div></section></div>; }
+function RestaurantCoupons(){
+  const {data:raw=[],loading,reload}=useLoad(()=>api('/restaurant/coupons'),[]);
+  const coupons=asArray(raw);
+  const [form,setForm]=useState({kind:'discount',code:'',name:'',starts_at:'',ends_at:'',unlimited_uses:true,max_uses:100,effect_type:'discount_percent',effect_value:50,min_purchase:0,previous_purchases_required:0,products:'',description:''});
+  const [msg,setMsg]=useState('');
+  const create=async(e)=>{e.preventDefault(); setMsg(''); try{ await api('/restaurant/coupons',{method:'POST',body:JSON.stringify({...form,products:form.products?form.products.split(',').map(x=>x.trim()).filter(Boolean):[]})}); setMsg('Beneficio creado. Si es descuento, se aplicará automáticamente cuando el cliente cumpla los requisitos.'); setForm({...form,code:'',name:'',products:''}); reload();}catch(err){setMsg(err.message)}};
+  if(loading)return <Loading/>;
+  return <div className="page-grid"><section className="card"><h3>Cupones y promociones del restaurante</h3><p>Los cupones redimibles se reclaman desde el panel del usuario. Los descuentos se aplican automáticamente en factura cuando el cliente cumple el requisito.</p><form className="form-grid admin-form" onSubmit={create}><Select label="Tipo" value={form.kind} onChange={(v)=>setForm({...form,kind:v})}><option value="coupon">Cupón redimible</option><option value="discount">Descuento automático</option></Select><Input label="ID / nombre" value={form.code} onChange={(v)=>setForm({...form,code:v.toUpperCase(),name:v})} placeholder="Ej: DIADELASOPA"/><Input label="Nombre visible" value={form.name} onChange={(v)=>setForm({...form,name:v})}/><Input type="datetime-local" label="Inicio" value={form.starts_at} onChange={(v)=>setForm({...form,starts_at:v})}/><Input type="datetime-local" label="Fin" value={form.ends_at} onChange={(v)=>setForm({...form,ends_at:v})}/><Select label="Usos ilimitados" value={form.unlimited_uses?'yes':'no'} onChange={(v)=>setForm({...form,unlimited_uses:v==='yes'})}>{YES_NO_OPTIONS.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</Select>{!form.unlimited_uses&&<Input label="Cantidad de usos" value={form.max_uses} onChange={(v)=>setForm({...form,max_uses:Number(v)})}/>}<Select label="Efecto" value={form.effect_type} onChange={(v)=>setForm({...form,effect_type:v})}><option value="discount_percent">Descuento %</option><option value="discount_fixed">Saldo descontable</option><option value="service_free">Servicio gratis</option><option value="service_percent">Descuento en tarifa de servicio %</option><option value="credit_fixed">Crédito en este restaurante</option></Select><Input label="Valor del efecto" value={form.effect_value} onChange={(v)=>setForm({...form,effect_value:Number(v)})}/><Input label="Productos del descuento" value={form.products} onChange={(v)=>setForm({...form,products:v})} placeholder="Ej: Sopa de arroz, Sopa de maíz"/><Select label="Requisito: compras anteriores" value={String(form.previous_purchases_required)} onChange={(v)=>setForm({...form,previous_purchases_required:Number(v)})}><option value="0">Sin requisito</option><option value="1">Al menos 1 compra previa</option><option value="3">Al menos 3 compras previas</option><option value="5">Al menos 5 compras previas</option></Select><Input label="Requisito: compras mayores a" value={form.min_purchase} onChange={(v)=>setForm({...form,min_purchase:Number(v)})}/><Input label="Descripción" value={form.description} onChange={(v)=>setForm({...form,description:v})}/><button className="primary-btn">Crear beneficio del restaurante</button>{msg&&<p className={msg.includes('creado')?'success-msg':'error-msg'}>{msg}</p>}</form></section><section className="card"><h3>Beneficios publicados</h3>{!coupons.length&&<Empty text="Aún no hay promociones."/>}{coupons.map(c=><article className="coupon" key={c.id}><b>{c.code}</b><p>{c.name || c.description} · Creado por {c.created_by}</p><span>{c.promotionBadge || c.effect_type}</span></article>)}</section></div>;
 }
 
-function ProfileDesigner() {
-  const [me, setMe] = useState(null); const [profile, setProfile] = useState({ bio: '', cover: '', accent: '#ff7a1a' }); const [msg, setMsg] = useState('');
-  useEffect(() => { api('/restaurant/me').then((r) => { setMe(r.restaurant); setProfile({ bio: r.restaurant?.profile?.bio || '', cover: r.restaurant?.profile?.cover || '', accent: r.restaurant?.design?.accent || '#ff7a1a' }); }); }, []);
-  const save = async () => { await api('/restaurant/profile', { method: 'PUT', body: JSON.stringify({ profile: { bio: profile.bio, cover: profile.cover }, design: { accent: profile.accent }, openingHours: me?.openingHours || {}, settings: me?.settings || {} }) }); setMsg('Perfil actualizado.'); };
-  return <section className="card"><h2>Personalización del perfil público</h2><p>Modifica cómo se ve tu restaurante para el cliente: portada, descripción, color, horarios y preferencias.</p><div className="profile-preview" style={{ '--accent': profile.accent }}><div className="cover"></div><h3>{me?.name || 'Restaurante'}</h3><p>{profile.bio || 'Describe tu propuesta de corrientazo.'}</p></div><div className="form-grid"><label className="field"><span>Biografía</span><textarea value={profile.bio} onChange={(e) => setProfile({ ...profile, bio: e.target.value })} /></label><label className="field"><span>URL imagen portada</span><input value={profile.cover} onChange={(e) => setProfile({ ...profile, cover: e.target.value })} /></label><label className="field compact"><span>Color de marca</span><input type="color" value={profile.accent} onChange={(e) => setProfile({ ...profile, accent: e.target.value })} /></label><button className="primary-btn" onClick={save}>Guardar diseño</button>{msg && <p className="success-msg">{msg}</p>}</div></section>;
-}
+function RestaurantStaff() { const { data=[], loading, reload }=useLoad(()=>api('/restaurant/staff'),[]); const [form,setForm]=useState({username:'',password:'quick2026',full_name:'',email:'',role:'restaurant_staff',role_label:'Cajero / Operador de reservas'}); const create=async(e)=>{e.preventDefault(); await api('/restaurant/staff',{method:'POST',body:JSON.stringify(form)}); reload();}; if(loading)return <Loading/>; return <section className="card"><h3>Equipo del restaurante</h3><form className="form-grid" onSubmit={create}><Input label="Usuario" value={form.username} onChange={(v)=>setForm({...form,username:v})}/><Input label="Contraseña" value={form.password} onChange={(v)=>setForm({...form,password:v})}/><Input label="Nombre" value={form.full_name} onChange={(v)=>setForm({...form,full_name:v})}/><Input label="Correo" value={form.email} onChange={(v)=>setForm({...form,email:v})}/><Select label="Rol" value={form.role} onChange={(v)=>setForm({...form,role:v})}><option value="restaurant_staff">Operador/cajero</option><option value="restaurant_owner">Dueño asociado</option></Select><Input label="Nombre interno del rol" value={form.role_label} onChange={(v)=>setForm({...form,role_label:v})}/><button className="primary-btn">Crear colaborador</button></form><Table headers={["Usuario","Rol","Estado"]} rows={data.map(u=>[u.username,u.role_label,u.status])}/></section>; }
 
-function MobileApp() {
-  const auth = useAuth();
-  if (!auth.account || !['customer','admin'].includes(auth.account.role)) return <CustomerAuth onLogged={auth.save} />;
-  return <CustomerHome account={auth.account} logout={auth.logout} />;
+// CUSTOMER APP
+function CustomerApp() { const { account, booting }=useAuth(); if(booting)return <Loading/>; if(!account || account.role!=='customer' && account.role!=='owner') return <LoginCard target="customer" title="QuickLunch" subtitle="Reserva corrientazos, paga antes o en caja, y reclama con QR." allowRegister/>; return <MobileShell><Routes><Route index element={<CustomerHome/>}/><Route path="restaurante/:slug" element={<CustomerRestaurant/>}/><Route path="pedidos" element={<CustomerOrders/>}/><Route path="cupones" element={<CustomerCoupons/>}/><Route path="soporte" element={<SupportPanel/>}/><Route path="cuenta" element={<CustomerAccount/>}/></Routes></MobileShell>; }
+function MobileShell({children}){ const {logout,account}=useAuth(); const nav=[['/home',Home,'Inicio'],['/home/pedidos',ShoppingBag,'Pedidos'],['/home/cupones',Gift,'Cupones'],['/home/soporte',MessageCircle,'Soporte'],['/home/cuenta',UserRound,'Cuenta']]; return <div className="mobile-app"><header className="mobile-head"><Logo/><button onClick={logout}><LogOut size={18}/></button></header><main>{children}</main><nav className="bottom-nav">{nav.map(([to,Icon,label])=><Link key={to} to={to}><Icon size={18}/><span>{label}</span></Link>)}</nav></div>; }
+function AiMini(){ const {data}=useLoad(()=>api('/ai/insights'),[]); const insights=asArray(data?.insights); if(!insights.length)return null; return <section className="card"><h3>IA QuickLunch activa</h3><p>{insights[0]}</p></section>; }
+function CustomerHome(){ const {data:raw=[],loading,error}=useLoad(()=>api('/restaurants/public'),[]); const data=asArray(raw); if(loading)return <Loading/>; if(error)return <div className="mobile-page"><Empty text={error}/></div>; return <div className="mobile-page"><section className="mobile-hero"><h1>Elige tu corrientazo</h1><p>Cupos por hora, QR de entrega y recomendaciones según tus gustos.</p></section><MapPanel count={data.length}/>{!data.length && <Empty text="Todavía no hay restaurantes activos. Activa o crea uno desde el panel administrativo."/>}<div className="restaurant-grid">{data.map(r=><Link className="restaurant-card" to={`/home/restaurante/${r.slug}`} key={r.id}>{r.design?.bannerUrl?<img src={asset(r.design.bannerUrl)} onError={safeImg}/>:<div className="food-placeholder"><ChefHat/></div>}<div><h3>{r.name}</h3><p>{r.address}</p><Badge>{r.prestige_points||0} puntos</Badge>{r.promotion&&<span className="promo-ribbon">{r.promotion.promotionBadge}</span>}</div></Link>)}</div><AiMini/></div>; }
+function CustomerRestaurant(){ const {slug}=useParams(); const [date,setDate]=useState(today()); const {data,loading,error,reload}=useLoad(()=>api(`/restaurants/${slug}/public?date=${date}`),[slug,date]); const [settings,setSettings]=useState(null); useEffect(()=>{api('/settings').then(setSettings).catch(()=>{});},[]); if(loading)return <Loading/>; if(error)return <div className="mobile-page"><Empty text={error}/><Link className="primary-btn" to="/home">Volver a restaurantes</Link></div>; if(!data?.restaurant)return <Empty text="Restaurante no encontrado o todavía no está activo."/>; return <OrderBuilder data={data} date={date} setDate={setDate} reload={reload} settings={settings}/>; }
+function OrderBuilder({data,date,setDate,settings}){ const nav=useNavigate(); const {restaurant,menu}=data; const [cart,setCart]=useState([]); const [current,setCurrent]=useState({ type:'full', components:{}, extras:[] }); const [pickup,setPickup]=useState(''); const [payment,setPayment]=useState('online'); const [coupon,setCoupon]=useState(''); const {data:rawSlots=[],reload:reloadSlots}=useLoad(()=>api(`/restaurants/${restaurant.id}/slots?date=${date}&lunch_count=${Math.max(1,cart.length)}`),[restaurant.id,date,cart.length]); if(!menu)return <div className="mobile-page"><h2>{restaurant.name}</h2><Empty text="Este restaurante todavía no publicó menú para hoy."/></div>; const byCat=(menu.items||[]).reduce((a,x)=>({...a,[x.category]:[...(a[x.category]||[]),x]}),{}); const base=Number(menu.base_price||15000); const fullTotal=()=> base + Object.values(current.components).reduce((s,x)=>s+Number(x?.price_delta||0),0)+current.extras.reduce((s,x)=>s+Number(x.price_delta||0),0); const addFull=()=>{ if(cart.length>=10)return alert('Máximo 10 almuerzos por pedido.'); const comps=Object.entries(current.components).map(([category,item])=> item?{category,...item}: {category,name:'Sin '+categoryLabel(category),skipped:true}); cart.push({type:'Almuerzo completo personalizable',label:'Almuerzo completo',base_price:base,components:comps,extras:current.extras,total:fullTotal()}); setCart([...cart]);}; const addSimple=(label,total,extra={})=>{ if(cart.length>=10)return alert('Máximo 10 almuerzos por pedido.'); setCart([...cart,{type:label,label,total,...extra}]);}; const submit=async()=>{ if(!pickup)return alert('Selecciona hora de recogida.'); const order=await api('/orders',{method:'POST',body:JSON.stringify({restaurant_id:restaurant.id,menu_id:menu.id,pickup_date:date,pickup_time:pickup,payment_method:payment,lunches:cart,coupon_code:coupon})}); nav('/home/pedidos');}; const fee=(settings?.fees?.[payment] || (payment==='online'?500:1000))*Math.max(1,cart.length); const subtotal=cart.reduce((s,x)=>s+x.total,0); return <div className="mobile-page"><div className="restaurant-banner">{restaurant.design?.bannerUrl&&<img src={asset(restaurant.design.bannerUrl)} onError={safeImg}/>}<h1>{restaurant.name}</h1><p>{restaurant.profile?.description||restaurant.address}</p></div><Field label="Fecha"><input type="date" value={date} onChange={(e)=>setDate(e.target.value)}/></Field><section className="builder card"><h3>Arma tu almuerzo completo</h3><p>Precio base {money(base)}. Puedes dejar un componente sin agregar; el precio no cambia. Los especiales suman adicional.</p>{COMPONENTS.map(cat=><div key={cat} className="component-block"><h4>{categoryLabel(cat)}</h4><div className="option-list"><button className={!current.components[cat]?'selected':''} onClick={()=>setCurrent({...current,components:{...current.components,[cat]:null}})}>No agregar</button>{(byCat[cat]||[]).map(it=><button key={it.id} className={current.components[cat]?.id===it.id?'selected':''} onClick={()=>setCurrent({...current,components:{...current.components,[cat]:it}})}>{it.image_url?<img src={asset(it.image_url)} onError={safeImg}/>:<ChefHat size={14}/>}<span>{it.name}</span>{it.price_delta>0&&<small>+{money(it.price_delta)}</small>}</button>)}</div></div>)}<h4>Adicionales fuera del plato</h4><div className="option-list">{(byCat.extra||[]).map(it=><button key={it.id} className={current.extras.find(x=>x.id===it.id)?'selected':''} onClick={()=>setCurrent({...current,extras: current.extras.find(x=>x.id===it.id)?current.extras.filter(x=>x.id!==it.id):[...current.extras,it]})}>{it.image_url?<img src={asset(it.image_url)} onError={safeImg}/>:<ChefHat size={14}/>} {it.name} +{money(it.price_delta)}</button>)}</div><button className="primary-btn" onClick={addFull}>Agregar almuerzo: {money(fullTotal())}</button></section><section className="card"><h3>Opciones separadas</h3><div className="plate-grid">{menu.sell_soup_separately? <button onClick={()=>addSimple('Sopa sola con jugo',Number(menu.soup_price||6000))}>Sopa con jugo<br/><b>{money(menu.soup_price)}</b></button>:null}{menu.sell_tray_separately? <button onClick={()=>addSimple('Bandeja sola con jugo',Number(menu.tray_price||13000))}>Bandeja con jugo<br/><b>{money(menu.tray_price)}</b></button>:null}</div></section><section className="card"><h3>Platos armados</h3><div className="complete-plates">{(byCat.complete_plate||[]).map(it=><button key={it.id} onClick={()=>addSimple(it.name,Number(it.price||it.price_delta||0),{complete_plate:it})}>{it.image_url?<img src={asset(it.image_url)} onError={safeImg}/>:<div className="food-placeholder"><ChefHat/></div>}<strong>{it.name}</strong><span>{money(it.price||it.price_delta)}</span></button>)}</div></section><section className="card sticky-checkout"><h3>Pedido ({cart.length}/10)</h3>{cart.map((l,i)=><p key={i}>{i+1}. {l.label} — {money(l.total)} <button onClick={()=>setCart(cart.filter((_,j)=>j!==i))}>Quitar</button></p>)}<Field label="Hora de recogida"><select value={pickup} onChange={(e)=>setPickup(e.target.value)}><option value="">Selecciona cupo disponible</option>{asArray(rawSlots).map(s=><option key={s.time} value={s.time}>{s.time} · cupos {s.available}</option>)}</select></Field><Field label="Pago"><select value={payment} onChange={(e)=>setPayment(e.target.value)}><option value="online">Pago adelantado: menos espera y menor comisión</option><option value="cash">Pago en caja</option></select></Field><Input label="Cupón" value={coupon} onChange={setCoupon} placeholder="Código opcional"/><p>Subtotal {money(subtotal)} + tarifa app {money(fee)} = <b>{money(subtotal+fee)}</b></p><button className="primary-btn" disabled={!cart.length} onClick={submit}>{payment==='online'?'Pagar y generar QR':'Reservar y generar QR'}</button></section></div>; }
+function CustomerOrders(){
+  const {data:raw=[],loading,reload}=useLoad(()=>api('/orders/mine'),[]);
+  const data=asArray(raw);
+  const [support,setSupport]=useState(null);
+  const [ratingOrder,setRatingOrder]=useState(null);
+  useEffect(()=>{ const t=setInterval(()=>reload(),4000); return()=>clearInterval(t); },[]);
+  useEffect(()=>{ const pending=data.find(o=>o.status==='claimed' && !localStorage.getItem(`ql_rated_${o.id}`)); if(pending) setRatingOrder(pending); },[raw]);
+  const cancel=async(id)=>{ try{ const r=await api(`/orders/${id}/cancel`,{method:'POST'}); alert(r.message); reload(); }catch(e){alert(e.message);} };
+  if(loading)return <Loading/>;
+  return <div className="mobile-page"><h2>Mis pedidos</h2>{!data.length&&<Empty text="Aún no tienes pedidos."/>}{data.map(o=><article className="order-card" key={o.id}><div><b>{o.restaurant_name}</b> <Badge>{orderStatus(o.status)}</Badge><p>{o.pickup_slot} · {money(o.total)} · {o.lunch_count} almuerzo(s)</p>{o.status!=='claimed'&&<img className="qr-img" src={`${API_URL}/orders/${o.id}/qr?token=${localStorage.getItem('ql_token')}`} onError={(e)=>e.currentTarget.style.display='none'}/>}<p><b>Código QR:</b> {o.status==='claimed'?'QR usado / inválido':o.public_code}</p></div><div className="actions"><button onClick={()=>window.print()} disabled={o.status==='claimed'}><QrCode size={16}/> Imprimir QR</button><button onClick={()=>cancel(o.id)} disabled={['claimed','preparing','ready','cancelled'].includes(o.status)}>Cancelar</button><button onClick={()=>setSupport(o)}>Soporte</button>{o.status==='claimed'&&<Rating order={o}/>}</div></article>)}{support&&<SupportModal order={support} onClose={()=>setSupport(null)}/>} {ratingOrder&&<RatingFloat order={ratingOrder} onClose={()=>{localStorage.setItem(`ql_rated_${ratingOrder.id}`,'skip');setRatingOrder(null)}}/>}</div>;
 }
-
-function CustomerAuth({ onLogged }) {
-  const [tab, setTab] = useState('login');
-  return <section className="mobile-frame"><div className="mobile-card hero-mobile"><Logo /><h1>Reserva tu corrientazo sin fila.</h1><p>Escoge restaurante, arma tu almuerzo, elige hora de recogida, paga en línea o en local y reclama con QR.</p></div><div className="tab-switch"><button className={tab==='login'?'active':''} onClick={() => setTab('login')}>Ingreso</button><button className={tab==='registro'?'active':''} onClick={() => setTab('registro')}>Registro</button></div>{tab === 'login' ? <LoginCard role="customer" title="Entrar a QuickLunch" subtitle="También puedes entrar con nicocr para probar todo." onLogged={onLogged} /> : <CustomerRegister onLogged={onLogged} />}</section>;
+function SupportModal({order,onClose}){ const [type,setType]=useState(''); const [body,setBody]=useState(''); const [options,setOptions]=useState([]); useEffect(()=>{api(`/support/options/${order.id}`).then(r=>{setOptions(r.options); setType(r.options[0]||'Soporte');});},[order.id]); const send=async()=>{ await api('/support/threads',{method:'POST',body:JSON.stringify({order_id:order.id,support_type:type,subject:type,body})}); onClose();}; return <Modal title="Soporte del pedido" onClose={onClose}><Select label="Tipo de soporte" value={type} onChange={setType}>{options.map(o=><option key={o}>{o}</option>)}</Select><textarea value={body} onChange={(e)=>setBody(e.target.value)} placeholder="Describe el problema o solicitud"/><button className="primary-btn" onClick={send}>Enviar soporte</button></Modal>; }
+function CustomerCoupons(){
+  const {data:rawCoupons=null,loading,error,reload}=useLoad(()=>api('/customer/coupons'),[]);
+  const {data:rawCredits=[]}=useLoad(()=>api('/customer/credits'),[]);
+  const coupons=asArray(rawCoupons?.available || rawCoupons); const wallet=asArray(rawCoupons?.wallet); const credits=asArray(rawCredits);
+  const [code,setCode]=useState(''); const [msg,setMsg]=useState('');
+  const redeem=async()=>{ setMsg(''); try{ const r=await api('/customer/coupons/redeem',{method:'POST',body:JSON.stringify({code})}); setMsg(r.message); setCode(''); reload(); }catch(e){setMsg(e.message)} };
+  if(loading)return <Loading/>;
+  return <div className="mobile-page"><h2>Cupones y créditos</h2>{error && <p className="error-msg">{error}</p>}<section className="card"><h3>Redimir código</h3><Input label="Código de cupón" value={code} onChange={(v)=>setCode(v.toUpperCase())} placeholder="Ej: QL5000"/><button className="primary-btn" onClick={redeem}>Redimir</button>{msg&&<p className={msg.includes('redimido')?'success-msg':'error-msg'}>{msg}</p>}</section><section className="card"><h3>Créditos disponibles</h3>{!credits.length && <Empty text="Aún no tienes créditos."/>}{credits.map((c,i)=><p key={c.id||i}>{c.restaurant_name}: <b>{money(c.balance)}</b> <small>{c.source}</small></p>)}</section><section className="card"><h3>Cupones activos</h3>{!coupons.length && <Empty text="No hay cupones activos por ahora."/>}{coupons.map(c=><article className="coupon" key={c.id}><b>{c.code}</b><p>{c.name || c.description} · {c.restaurant_name||'QuickLunch'}</p><span>{c.promotionBadge || (c.effect_type==='discount_percent'?`${c.effect_value}%`:money(c.effect_value||c.discount_value))}</span></article>)}</section></div>;
 }
-
-function CustomerRegister({ onLogged }) {
-  const [form, setForm] = useState({ full_name: '', username: '', email: '', phone: '', password: '', consent_analytics: true }); const [error, setError] = useState('');
-  const submit = async (e) => { e.preventDefault(); setError(''); try { const payload = await api('/auth/register', { method: 'POST', body: JSON.stringify(form) }); onLogged(payload); } catch (err) { setError(err.message); } };
-  return <form className="mobile-card form-grid" onSubmit={submit}><h2>Crear cuenta</h2>{['full_name','username','email','phone','password'].map((f) => <label className="field" key={f}><span>{f.replaceAll('_',' ')}</span><input type={f==='password'?'password':'text'} value={form[f]} onChange={(e) => setForm({ ...form, [f]: e.target.value })} /></label>)}<label className="check"><input type="checkbox" checked={form.consent_analytics} onChange={(e) => setForm({ ...form, consent_analytics: e.target.checked })} /> Acepto que QuickLunch use mis gustos y actividad para recomendar platos, restaurantes y próximos pedidos.</label>{error && <p className="error-msg">{error}</p>}<button className="primary-btn">Registrarme</button></form>;
+function CustomerAccount(){ const {account}=useAuth(); return <div className="mobile-page"><section className="card"><h2>Mi cuenta</h2><p>{account.full_name}</p><p>{account.email}</p><p>Rol: {ROLE_LABELS[account.role]}</p><p>Saldo general: {money(account.wallet_balance)}</p></section></div>; }
+function ConfirmPage(){ const {code}=useParams(); const {data,loading}=useLoad(()=>api(`/orders/confirm/${code}`),[code]); if(loading)return <Loading/>; return <div className="confirm-page"><section className="card"><Logo/><h1>Confirmación de pedido</h1><p><b>Estado:</b> {orderStatus(data.status)}</p><p><b>Pedido:</b> {data.public_code}</p><p><b>Restaurante:</b> {data.restaurant_name}</p><p><b>Total:</b> {money(data.total)}</p><p>La entrega solo queda completada cuando el restaurante escanea este QR desde su panel.</p></section></div>; }
+function Rating({order}){ const [done,setDone]=useState(!!localStorage.getItem(`ql_rated_${order.id}`)); if(done)return <Badge tone="success">Calificado</Badge>; return <button onClick={()=>localStorage.removeItem(`ql_rated_${order.id}`)}>Calificar ahora</button>; }
+function RatingFloat({order,onClose}){ const [rating,setRating]=useState(5); const [comment,setComment]=useState(''); const submit=async()=>{ await api(`/orders/${order.id}/rating`,{method:'POST',body:JSON.stringify({rating,comment})}); localStorage.setItem(`ql_rated_${order.id}`,'done'); onClose(); }; return <div className="rating-float card"><button className="close" onClick={onClose}>×</button><h3>¿Cuántas estrellas le das a {order.restaurant_name}?</h3><div className="stars-row">{[1,2,3,4,5].map(n=><button key={n} className={n<=rating?'star-on':''} onClick={()=>setRating(n)}>★</button>)}</div><textarea value={comment} onChange={(e)=>setComment(e.target.value)} placeholder="Comentarios y sugerencias opcionales"/><button className="primary-btn" onClick={submit}>Enviar calificación</button></div>; }
+function SupportPanel(){
+  const {account}=useAuth();
+  const {data:raw=[],loading,error,reload}=useLoad(()=>api('/support/threads'),[]);
+  const threads=asArray(raw); const [active,setActive]=useState(null); const [body,setBody]=useState(''); const [channel,setChannel]=useState(account?.role==='customer'?'customer':'admin');
+  const send=async()=>{ if(!active||!body.trim())return; await api(`/support/threads/${active.id}/messages`,{method:'POST',body:JSON.stringify({body,channel})}); setBody(''); const updated=await api('/support/threads'); setActive(asArray(updated).find(t=>t.id===active.id)); reload(); };
+  const action=async(payload)=>{ await api(`/support/threads/${active.id}/action`,{method:'PATCH',body:JSON.stringify(payload)}); const updated=await api('/support/threads'); setActive(asArray(updated).find(t=>t.id===active.id)); reload(); };
+  if(loading)return <Loading/>;
+  return <section className="card"><h3>Centro de soporte funcional</h3>{error&&<p className="error-msg">{error}</p>}<div className="support-grid"><div>{!threads.length&&<Empty text="No hay casos de soporte por ahora."/>}{threads.map(t=><button className={`support-thread ${active?.id===t.id?'selected':''}`} key={t.id} onClick={()=>setActive(t)}><b>{t.subject}</b><span>{t.support_type} · {t.status}</span>{t.restaurant_involved? <Badge>Restaurante implicado</Badge>:<small>Solo usuario ↔ QuickLunch</small>}</button>)}</div>{active&&<div className="support-chat"><h4>{active.subject}</h4><div className="chat-box">{asArray(active.messages).map(m=><p key={m.id} className={`bubble ${m.channel}`}><b>{m.sender_name} · {m.channel}</b><br/>{m.body}</p>)}</div>{account.role!=='customer'&&<Select label="Chat a responder" value={channel} onChange={setChannel}><option value="customer">Chat con usuario</option><option value="restaurant">Chat con restaurante</option><option value="admin">Nota administrativa</option></Select>}<textarea value={body} onChange={(e)=>setBody(e.target.value)} placeholder="Escribe un mensaje"/><button className="primary-btn" onClick={send}>Enviar mensaje</button>{['owner','admin'].includes(account.role)&&<div className="support-actions"><button onClick={()=>action({involve_restaurant:true})}>Implicar restaurante</button><button onClick={()=>action({reward_user:true,reward_amount:5000})}>Recompensar usuario $5.000</button><button onClick={()=>action({sanction_restaurant:true,penalty_points:1,penalty_reason:'Sanción desde soporte'})}>Sancionar restaurante</button><button onClick={()=>action({deny_request:true,resolve:true})}>Negar y resolver</button><button className="primary-btn" onClick={()=>action({resolve:true})}>Marcar resuelto</button></div>}</div>}</div></section>;
 }
+function App(){ return <ErrorBoundary><AuthProvider><BrowserRouter><Routes><Route path="/admin/*" element={<AdminApp/>}/><Route path="/home/*" element={<CustomerApp/>}/><Route path="/confirmar/:code" element={<ConfirmPage/>}/><Route path="/" element={<Navigate to="/home" replace/>}/><Route path="/:slug/*" element={<RestaurantApp/>}/></Routes></BrowserRouter></AuthProvider></ErrorBoundary>; }
 
-function CustomerHome({ account, logout }) {
-  const [restaurants, setRestaurants] = useState([]); const [selected, setSelected] = useState(null); const [orders, setOrders] = useState([]); const [query, setQuery] = useState('');
-  const load = () => { api('/restaurants/public').then(setRestaurants); api('/orders/mine').then(setOrders).catch(() => setOrders([])); };
-  useEffect(load, []);
-  const filtered = restaurants.filter((r) => r.name.toLowerCase().includes(query.toLowerCase()) || r.address.toLowerCase().includes(query.toLowerCase()));
-  return <section className="mobile-app"><header className="mobile-top"><Logo compact /><button className="tiny-btn" onClick={logout}><LogOut size={15} /></button></header><div className="mobile-greeting"><h1>Hola, {account.full_name?.split(' ')[0] || account.username}</h1><p>¿Qué corrientazo quieres recoger hoy?</p></div><div className="search-box"><Search size={18} /><input placeholder="Buscar restaurante o zona" value={query} onChange={(e) => setQuery(e.target.value)} /></div><MapPanel restaurants={restaurants} compact /><div className="ai-strip"><Sparkles size={18} /><span>IA QuickLunch: cuando tengas historial, te sugeriremos restaurante, hora y plato probable.</span></div><h2>Cerca de ti</h2><div className="restaurant-grid">{filtered.map((r) => <button className="restaurant-tile" key={r.id} onClick={() => setSelected(r)}><div className="tile-cover"><Store /></div><strong>{r.name}</strong><span>{r.address}</span><small>Ver menú de hoy</small></button>)}</div>{!restaurants.length && <div className="mobile-card"><h3>Aún no hay restaurantes activos</h3><p>Ingresa a /admin con nicocr y crea o aprueba un restaurante para empezar la simulación.</p></div>}<CustomerOrders orders={orders} /><BottomNav /><OrderModal restaurant={selected} close={() => { setSelected(null); load(); }} /></section>;
-}
-
-function CustomerOrders({ orders }) {
-  return <section><h2>Mis pedidos</h2><div className="cards-list compact">{orders.slice(0, 4).map((o) => <article className="receipt-card" key={o.id}><div><strong>{o.restaurant_name}</strong><p>{o.pickup_slot} · {statusLabel(o.status)}</p><small>{o.public_code}</small></div><QrCode /></article>)}{!orders.length && <p className="muted">No tienes pedidos todavía.</p>}</div></section>;
-}
-
-function BottomNav() {
-  return <nav className="bottom-nav"><button><Home />Inicio</button><button><Gift />Cupones</button><button><ShoppingBag />Pedidos</button><button><MessageCircle />Soporte</button><button><UserRound />Cuenta</button></nav>;
-}
-
-function OrderModal({ restaurant, close }) {
-  const [detail, setDetail] = useState(null);
-  const [slot, setSlot] = useState('12:00');
-  const [date] = useState(new Date().toISOString().slice(0,10));
-  const [payment, setPayment] = useState('online');
-  const [receipt, setReceipt] = useState(null);
-  const [error, setError] = useState('');
-  const [selection, setSelection] = useState({});
-  useEffect(() => { if (restaurant) api(`/restaurants/${restaurant.slug}/public`).then((data) => { setDetail(data); setSelection({}); }); }, [restaurant]);
-  if (!restaurant) return null;
-  const menuItems = detail?.menu?.items || [];
-  const basePrice = Number(menuItems[0]?.plate?.base_price || BASE_LUNCH_PRICE);
-  const fixedPlates = menuItems.filter((i) => i.category === 'complete_plate');
-  const customizableItems = menuItems.filter((i) => i.category !== 'complete_plate');
-  const byCategory = customizableItems.reduce((acc, item) => ({ ...acc, [item.category]: [...(acc[item.category] || []), item] }), {});
-  const selectedCustom = Object.values(selection).filter(Boolean);
-  const chosenFixed = selection.complete_plate ? fixedPlates.find((p) => String(p.id) === String(selection.complete_plate)) : null;
-  const usingFixed = Boolean(chosenFixed);
-  const items = usingFixed
-    ? [{ menu_item_id: chosenFixed.id, name: chosenFixed.name, category: 'complete_plate', price: Number(chosenFixed.price_delta || chosenFixed.price || 0) }]
-    : selectedCustom.map((item) => ({ menu_item_id: item.id, name: item.name, category: item.category, price: itemExtra(item), price_delta: itemExtra(item) }));
-  const subtotal = usingFixed ? Number(chosenFixed?.price_delta || chosenFixed?.price || basePrice) : basePrice + items.reduce((s, i) => s + Number(i.price || 0), 0);
-  const fee = payment === 'online' ? 500 : 1000;
-  const order = async () => {
-    setError('');
-    try {
-      const payloadItems = items.length ? items : [{ name: 'Corrientazo base', category: 'customizable_base', price: basePrice }];
-      const res = await api('/orders', { method: 'POST', body: JSON.stringify({ restaurant_id: restaurant.id, menu_id: detail?.menu?.id, pickup_date: date, pickup_time: slot, payment_method: payment, items: payloadItems, subtotal }) });
-      setReceipt(res);
-    } catch (err) { setError(err.message); }
-  };
-  return <div className="modal-backdrop"><div className="order-modal"><button className="close" onClick={close}>×</button>{receipt ? <div className="receipt-view"><CheckCircle2 size={46} /><h2>Reserva confirmada</h2><p>{receipt.restaurant_name}</p><div className="qr-box"><QrCode size={86} /><span>{receipt.public_code}</span></div><p>Recoge a las <strong>{receipt.pickup_slot}</strong>. QR obligatorio para entrega.</p><button className="primary-btn" onClick={close}>Listo</button></div> : <><h2>{restaurant.name}</h2><p>{detail?.restaurant?.profile?.bio || 'Menú disponible para reserva.'}</p>{!detail?.menu && <div className="ai-strip"><Sparkles size={18}/> Este restaurante aún no publicó menú. Se muestra corrientazo base demo.</div>}{fixedPlates.length > 0 && <section className="menu-builder"><h3>Platos armados</h3><label className="field"><span>Elegir plato armado</span><select value={selection.complete_plate || ''} onChange={(e) => setSelection({ complete_plate: e.target.value })}><option value="">Prefiero personalizar mi almuerzo</option>{fixedPlates.map((p) => <option value={p.id} key={p.id}>{p.name} · {money(Number(p.price_delta || p.price || basePrice))}</option>)}</select></label></section>}{!usingFixed && <section className="menu-builder"><h3>Personaliza tu almuerzo</h3><p>Precio base: <strong>{money(basePrice)}</strong>. Las opciones normales no suman precio; las especiales muestran su adicional.</p>{Object.entries(byCategory).map(([cat, list]) => <label className="field" key={cat}><span>{categoryLabel(cat)}</span><select value={selection[cat]?.id || ''} onChange={(e) => setSelection({ ...selection, [cat]: list.find((x) => String(x.id) === e.target.value) })}><option value="">Elegir {categoryLabel(cat).toLowerCase()}</option>{list.map((item) => <option value={item.id} key={item.id}>{item.name}{itemExtra(item) ? ` · especial +${money(itemExtra(item))}` : ' · menú normal'}</option>)}</select></label>)}</section>}<div className="menu-builder"><h3>Resumen del pedido</h3>{usingFixed ? <div className="line-item"><span>{chosenFixed.name}</span><strong>{money(subtotal)}</strong></div> : <><div className="line-item"><span>Almuerzo base personalizable</span><strong>{money(basePrice)}</strong></div>{items.map((i) => <div className="line-item" key={`${i.category}-${i.menu_item_id}`}><span>{categoryLabel(i.category)}: {i.name}</span><strong>{i.price ? `+${money(i.price)}` : money(0)}</strong></div>)}</>}</div><label className="field"><span>Hora de recogida</span><select value={slot} onChange={(e) => setSlot(e.target.value)}>{['11:00','11:10','11:20','11:30','11:40','11:50','12:00','12:10','12:20','12:30','12:40','12:50','13:00','13:10','13:20','13:30','13:40','13:50','14:00'].map((s) => <option key={s}>{s}</option>)}</select></label><div className="payment-options"><button className={payment==='online'?'selected':''} onClick={() => setPayment('online')}><WalletCards /> Pago adelantado <small>Menos espera · tarifa {money(500)}</small></button><button className={payment==='cash'?'selected':''} onClick={() => setPayment('cash')}><CircleDollarSign /> Pago en local <small>Reserva presencial · tarifa {money(1000)}</small></button></div><div className="invoice"><span>Subtotal</span><strong>{money(subtotal)}</strong><span>Tarifa QuickLunch</span><strong>{money(fee)}</strong><span>Total</span><strong>{money(subtotal + fee)}</strong></div>{payment === 'online' && <div className="gateway-demo"><ShieldCheck /> Pasarela demo: tarjetas, Nequi, PSE y Bancolombia simulan aprobación inmediata.</div>}{error && <p className="error-msg">{error}</p>}<button className="primary-btn" onClick={order}>Confirmar pedido</button></>}</div></div>;
-}
-
-function App() {
-  return <BrowserRouter><Routes><Route path="/admin/*" element={<AdminApp />} /><Route path="/" element={<MobileApp />} /><Route path="/home" element={<MobileApp />} /><Route path="/:slug/*" element={<RestaurantApp />} /><Route path="*" element={<Navigate to="/home" />} /></Routes></BrowserRouter>;
-}
-
-createRoot(document.getElementById('root')).render(<App />);
+createRoot(document.getElementById('root')).render(<App/>);

@@ -9,4 +9,4 @@ for (const name of ['quicklunch_users.db','quicklunch_users.db-shm','quicklunch_
   const file = path.join(dataDir, name);
   if (fs.existsSync(file)) fs.unlinkSync(file);
 }
-console.log('Bases QuickLunch reiniciadas. Ejecuta npm run dev para reconstruirlas con el usuario admin inicial.');
+console.log('Bases QuickLunch reiniciadas. Ejecuta npm run dev para reconstruirlas con el usuario owner inicial.');

@@ -1,31 +1,30 @@
-# QuickLunch Web Module v1.0.3
+# QuickLunch Web Module v1.0.7
 
-Módulo web funcional para simular el ecosistema de QuickLunch en localhost:
+Módulo web integral de QuickLunch para ejecutar en localhost. Incluye backend Express, frontend React + Vite, bases SQLite locales con `sql.js`, panel de owner/admin, paneles de restaurante, app móvil simulada de cliente, QR, soporte, IA operativa por reglas y sistema funcional de cupones/créditos.
 
-- `/` y `/home`: aplicación móvil del usuario.
-- `/admin`: panel administrativo de QuickLunch.
-- `/<nombre_restaurante>`: portal web del restaurante.
-- API Express en `http://localhost:4000/api`.
-- Bases SQLite locales en `server/data`.
+## Rutas principales
+
+```txt
+/admin                 Panel administrativo QuickLunch
+/home                  App móvil simulada para clientes
+/                      App móvil simulada para clientes
+/<slug-restaurante>    Panel del restaurante
+/confirmar/<codigo>    Confirmación pública del QR
+```
 
 ## Usuario inicial
 
 ```txt
 Usuario: nicocr
 Contraseña: quick2026
-Rol: administrador total
-Ciudad activa: Cali
+Rol: owner
 ```
 
-## Requisitos
+El rol `owner` tiene acceso total a todas las plataformas y a todos los restaurantes.
 
-- Node.js 18 o superior.
-- npm instalado.
-- Conexión a internet solo para instalar dependencias la primera vez.
+## Instalación en Windows / PowerShell
 
-## Instalación limpia en Windows PowerShell
-
-Desde la carpeta raíz del proyecto, es decir, donde está este README:
+Desde la carpeta `quicklunch-web`:
 
 ```powershell
 npm config set registry https://registry.npmjs.org/
@@ -34,40 +33,13 @@ npm run install:all
 npm run dev
 ```
 
-Luego abre:
+Abre:
 
 ```txt
 http://localhost:5173/admin
 ```
 
-El backend queda en:
-
-```txt
-http://localhost:4000/api
-```
-
-## Si ya habías intentado instalar y falló
-
-El error `ECONNRESET` con una URL parecida a `packages.applied-caas-gateway...` ocurre cuando npm intenta usar un registry interno que no existe en tu computador.
-
-Ejecuta esto desde la carpeta raíz del proyecto:
-
-```powershell
-npm config set registry https://registry.npmjs.org/
-npm cache clean --force
-Remove-Item -Recurse -Force node_modules -ErrorAction SilentlyContinue
-Remove-Item -Recurse -Force server\node_modules -ErrorAction SilentlyContinue
-Remove-Item -Recurse -Force client\node_modules -ErrorAction SilentlyContinue
-Remove-Item -Force package-lock.json -ErrorAction SilentlyContinue
-Remove-Item -Force server\package-lock.json -ErrorAction SilentlyContinue
-Remove-Item -Force client\package-lock.json -ErrorAction SilentlyContinue
-npm run install:all
-npm run dev
-```
-
-## Alternativa: arrancar en dos terminales
-
-Si prefieres no usar el script unificado:
+Si `npm run dev` falla por restricciones de Windows, abre dos terminales:
 
 Terminal 1:
 
@@ -81,115 +53,141 @@ Terminal 2:
 npm run dev:client
 ```
 
+## Reiniciar bases de datos
 
-## Cambios incluidos en v1.0.3
-
-- Desde `/admin/restaurantes` ahora se puede **editar** la información del restaurante y también **eliminarlo** del sistema demo.
-- Los formularios administrativos y legales usan etiquetas claras en español y ejemplos dentro de cada casilla.
-- Se reemplazó el texto técnico `chamber commerce` por **Matrícula mercantil / Registro en Cámara de Comercio**.
-- La creación de inventario ya no pide precio para proteína, principio, acompañamiento, jugo, postre o extra.
-- Cada componente puede marcarse como **especial** y ahí sí se pide el **costo adicional**.
-- Los platos armados, como `Combo de hamburguesa`, sí piden precio propio.
-- En el pedido del usuario, el menú personalizable cobra el precio base del corrientazo y solo suma adicionales especiales.
-
-Ejemplo implementado:
-
-```txt
-Precio base del corrientazo: $15.000
-Tilapia marcada como especial: +$5.000
-Total del usuario con tilapia: $20.000 antes de tarifa QuickLunch
-```
-
-## Rutas principales
-
-```txt
-http://localhost:5173/
-http://localhost:5173/home
-http://localhost:5173/admin
-http://localhost:5173/corrientazo-demo
-```
-
-## Bases de datos
-
-Al iniciar el servidor se crean automáticamente en:
-
-```txt
-server/data/quicklunch_users.db
-server/data/quicklunch_restaurants.db
-server/data/quicklunch_core.db
-```
-
-Por defecto vienen sin datos de negocio, salvo el usuario administrador inicial `nicocr`.
-
-Para reiniciar las bases:
+Las bases se crean automáticamente en `server/data`. Para reiniciar todo y dejar solo el owner inicial:
 
 ```powershell
 npm run reset-db
 npm run dev
 ```
 
+Usa esto solo si tienes datos viejos que choquen con nuevas columnas o roles.
+
+## Roles implementados
+
+| Rol | Acceso |
+|---|---|
+| `owner` | Acceso total a admin, usuarios, restaurantes, roles, comisiones, soporte, cupones y todos los paneles de restaurante. |
+| `admin` | Panel administrativo, usuarios, restaurantes y soporte. No puede entregar rol de administrador ni owner. |
+| `restaurant_owner` | Dueño de restaurante. Acceso completo al panel de su restaurante: perfil, inventario, menú, horarios, equipo, pedidos, estadísticas, cupones y descuentos. |
+| `restaurant_staff` | Cajero/operador. Acceso limitado a operación de restaurante: menú, pedidos, QR y hora pico. No ve estadísticas ni ingresos. |
+| `customer` | Cliente final. Puede ver restaurantes, pedir, pagar, cancelar cuando aplique, usar cupones, soporte, historial y QR. |
+
+## Cambios v1.0.7
+
+### Acceso, usuarios y recuperación
+
+- Recuperación piloto de contraseña por usuario: con solo ingresar el usuario, la pantalla muestra la clave registrada para pruebas locales.
+- Creación de usuarios desde admin corregida.
+- Owner queda asociado a todos los restaurantes y puede entrar a cualquier panel.
+- Validaciones reforzadas para evitar errores/repetidos antes de guardar.
+
+### Cliente y pedidos
+
+- El recuadro de pedido ya no tapa la pantalla ni bloquea el botón de generar pedido.
+- Restaurante público desde la app del cliente carga mejor y muestra promociones activas.
+- Al reclamar el almuerzo por QR, el usuario recibe una ventana flotante para calificar con estrellas y comentar.
+- Una vez el QR queda reclamado, el QR deja de servir y el restaurante ya no puede modificar el estado del pedido.
+- El restaurante no acumula ingresos liberados hasta que el QR quede validado.
+
+### Restaurante
+
+- La vista cliente ahora es una previsualización integrada dentro del panel, sin redirigir a otros enlaces.
+- La búsqueda de imágenes intenta traer 5 imágenes de internet usando nombre y descripción del plato o porción. Si la búsqueda externa no responde, usa respaldo visual relacionado con comida.
+- Las promociones del restaurante resaltan su tarjeta en el listado de clientes y muestran el beneficio más fuerte.
+
+### Soporte funcional
+
+- Soporte asociado a pedidos.
+- Chat del usuario con QuickLunch.
+- El owner/admin puede implicar al restaurante cuando el problema sí corresponde al restaurante.
+- Cuando se implica al restaurante, se abre un canal separado para hablar con el restaurante.
+- El owner/admin puede combinar acciones:
+  - recompensar usuario
+  - sancionar restaurante
+  - negar solicitud
+  - marcar como resuelto
+- El restaurante solo ve soportes en los que QuickLunch lo haya implicado.
+
+### IA operativa integrada
+
+- Se agregó una IA operativa por reglas conectada a la información real del sistema.
+- Analiza pedidos, ingresos, demoras, cancelaciones, ratings, restaurantes y comportamiento general.
+- Muestra recomendaciones activas para owner/admin, restaurante y usuario según su rol.
+
+### Analíticas owner
+
+- El panel owner muestra ingresos libres de la app.
+- Se agregó endpoint de analíticas con ingresos retenidos, liberados y recomendaciones operativas.
+
+### Cupones, créditos y descuentos
+
+- Owner/admin puede crear cupones con:
+  - ID/nombre
+  - inicio y fin de vigencia
+  - usos limitados o ilimitados
+  - cobertura: toda la app, un restaurante o grupo de restaurantes
+  - efecto: crédito, descuento, servicio gratis o descuento de servicio
+  - valor del efecto
+  - aplicación automática para todos o usuarios seleccionados
+- Cliente puede redimir cupones desde su panel.
+- Los créditos de cupones se aplican funcionalmente en la compra.
+- Restaurante puede crear beneficios propios únicamente para su restaurante:
+  - cupones redimibles por código
+  - descuentos automáticos sin código si el usuario cumple requisitos
+- Requisitos disponibles:
+  - compras anteriores en ese restaurante
+  - compra mayor a cierto valor
+  - compra mayor a 0 para promociones generales
+- Descuentos de restaurante pueden aplicar a todo el pedido, productos concretos o tarifa de servicio.
+- Restaurantes no ven ni gestionan cupones de otros restaurantes ni de toda la app.
+- El panel registra creador, rol del creador y fecha de creación.
+- Las promociones activas resaltan la tarjeta del restaurante y muestran la etiqueta más fuerte:
+  - Saldo GRATIS
+  - Descuento
+  - Servicio gratis
+  - Servicio descuento
+
 ## Flujo recomendado de prueba
 
-1. Entrar a `/admin`.
-2. Iniciar sesión con `nicocr / quick2026`.
-3. Crear o aprobar un restaurante.
-4. Entrar al portal del restaurante con su slug: `/<nombre_restaurante>`.
-5. Crear inventario: componentes normales sin precio, opciones especiales con costo adicional y platos armados con precio propio.
-6. Publicar menú del día: definir precio base del corrientazo, stock diario y modo personalizable/platos armados/mixto.
-7. Entrar a `/home` como usuario.
-8. Registrarse como cliente.
-9. Hacer una reserva y generar QR.
-10. Ver el pedido en la pantalla de reservas del restaurante.
+1. Entra a `/admin` con `nicocr / quick2026`.
+2. Crea un restaurante desde **Restaurantes**.
+3. Entra al panel del restaurante con el slug generado.
+4. Crea inventario y menú del día.
+5. Configura horarios y cupos de atención.
+6. Crea un cupón o descuento desde owner o desde el restaurante.
+7. Entra a `/home` como cliente y crea una cuenta.
+8. Redime cupón si aplica.
+9. Haz un pedido.
+10. En el panel de restaurante, valida el QR desde **Pedidos y QR**.
+11. Revisa que el pedido quede como QR reclamado y que aparezca la calificación flotante en la app del cliente.
 
-## Notas del proyecto
+## Imágenes
 
-- Cali es la única ciudad habilitada inicialmente.
-- Pasto y Bogotá aparecen como próximas ciudades, pero el sistema bloquea el acceso con el mensaje correspondiente.
-- El modelo de tarifas inicial es:
-  - Pago adelantado: `$500` de tarifa de app.
-  - Pago en local: `$1000` de tarifa de app.
-- Los cupos de recogida están configurados cada 10 minutos.
-- La ventana máxima de recogida está modelada en la configuración del sistema.
-- La integración de Google Maps está simulada mediante embed público; para producción se recomienda usar API Key propia.
-- El sistema de IA está representado como recomendaciones internas calculadas/simuladas para orientar el flujo funcional del proyecto.
+El restaurante puede:
+
+- Subir logo y banner desde archivo local.
+- Subir imágenes de platos/componentes.
+- Buscar 5 sugerencias de internet por nombre y descripción.
+
+Las imágenes subidas se guardan en:
+
+```txt
+server/uploads/quicklunch
+```
 
 ## Estructura
 
 ```txt
 quicklunch-web/
-├─ client/
-│  ├─ src/
-│  │  ├─ main.jsx
-│  │  └─ styles/theme.css
-│  └─ package.json
-├─ server/
-│  ├─ src/
-│  │  ├─ db.js
-│  │  ├─ reset-db.js
-│  │  └─ server.js
-│  ├─ data/
-│  └─ package.json
-├─ scripts/
-│  └─ dev.mjs
-├─ .npmrc
-├─ package.json
-└─ README.md
+  client/        Frontend React + Vite
+  server/        API Express
+  server/data/   Bases SQLite generadas automáticamente
+  server/uploads Imágenes subidas
+  scripts/       Lanzador de desarrollo
 ```
 
-## Si `npm run dev` falla en Windows
+## Nota
 
-Abre dos terminales dentro de la carpeta `quicklunch-web`:
-
-Terminal 1:
-
-```powershell
-npm run dev:server
-```
-
-Terminal 2:
-
-```powershell
-npm run dev:client
-```
-
-Luego entra a `http://localhost:5173/admin`.
+Este módulo está diseñado como entorno formal funcional para pruebas locales del proyecto QuickLunch. Para producción real se recomienda migrar autenticación, pagos, almacenamiento de imágenes, mapas, QR y notificaciones a servicios gestionados con HTTPS.
