@@ -10,7 +10,6 @@ import crypto from 'crypto';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
-import QRCode from 'qrcode';
 import { z } from 'zod';
 import {
   initDb, usersDb, restaurantsDb, coreDb, parseJson, jsonString, qlSettings, saveQlSettings,
@@ -52,10 +51,313 @@ const RESTAURANT_ROLES = ['owner', 'restaurant_owner', 'restaurant_staff'];
 const FULL_RESTAURANT_ROLES = ['owner', 'restaurant_owner'];
 
 const code = (prefix = 'QL') => `${prefix}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+const deliveryCode = () => `${crypto.randomInt(0, 1000).toString().padStart(3, '0')}-${crypto.randomInt(0, 1000).toString().padStart(3, '0')}`;
 const toSlug = (value) => slugify(value || '', { lower: true, strict: true, locale: 'es' });
 const moneyInt = (v, fallback = 0) => Number.isFinite(Number(v)) ? Math.max(0, Math.round(Number(v))) : fallback;
 const asArray = (v) => Array.isArray(v) ? v : [];
 const getToday = () => new Date().toISOString().slice(0, 10);
+
+const BAD_WORDS = [
+  'porno','pornografia','pornografía','sexo','desnudo','desnuda','nude','xxx','droga','cocaina','cocaína','marihuana','weed',
+  'arma','pistola','rifle','sangre','gore','odio','nazi','terrorismo','matar','asesinar'
+];
+function cleanUser(value = '') {
+  return String(value || '').trim();
+}
+function hasBadWords(value = '') {
+  const normalized = String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9ñ\s_-]/g, ' ');
+  return BAD_WORDS.some((word) => normalized.includes(word.normalize('NFD').replace(/[\u0300-\u036f]/g, '')));
+}
+
+
+function normalizeFoodText(value = '') {
+  return String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9ñ\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+const FOOD_IMAGE_DICTIONARY = [
+  { keys: ['tilapia', 'pescado', 'mojarra'], terms: ['tilapia frita servida en plato', 'pescado frito plato restaurante', 'mojarra frita almuerzo colombiano'] },
+  { keys: ['chuleta cerdo', 'chuleta de cerdo', 'cerdo', 'puerco'], terms: ['chuleta de cerdo apanada plato', 'chuleta de cerdo almuerzo restaurante', 'cerdo frito servido en plato'] },
+  { keys: ['chuleta res', 'chuleta de res', 'carne res', 'res', 'bistec'], terms: ['chuleta de res plato restaurante', 'bistec de res servido en plato', 'carne de res almuerzo colombiano'] },
+  { keys: ['pollo', 'pechuga'], terms: ['pollo asado servido en plato', 'pechuga de pollo almuerzo restaurante', 'pollo a la plancha plato comida'] },
+  { keys: ['costilla', 'bbq'], terms: ['costilla bbq servida en plato', 'costillas bbq restaurante comida', 'costilla de cerdo plato almuerzo'] },
+  { keys: ['frijol', 'frijoles'], terms: ['frijoles servidos en plato colombiano', 'frijoles caseros almuerzo colombiano', 'frijoles con arroz plato'] },
+  { keys: ['lenteja', 'lentejas'], terms: ['lentejas servidas en plato', 'lentejas caseras almuerzo', 'lentejas con arroz comida casera'] },
+  { keys: ['pasta', 'espagueti', 'spaghetti'], terms: ['pasta servida en plato restaurante', 'espagueti plato comida', 'pasta como acompañamiento almuerzo'] },
+  { keys: ['arroz'], terms: ['arroz blanco servido en plato', 'arroz acompañamiento comida', 'arroz plato almuerzo'] },
+  { keys: ['ensalada'], terms: ['ensalada fresca servida en plato', 'ensalada acompañamiento almuerzo', 'ensalada restaurante comida'] },
+  { keys: ['papa cocida', 'papa salada'], terms: ['papa cocida servida en plato', 'papas cocidas acompañamiento', 'papa salada almuerzo colombiano'] },
+  { keys: ['papa frita', 'papas fritas'], terms: ['papas fritas servidas en plato', 'papas fritas restaurante comida', 'french fries plate food'] },
+  { keys: ['patacon', 'toston'], terms: ['patacon frito plato colombiano', 'tostones servidos en plato', 'patacon acompañamiento comida'] },
+  { keys: ['sopa arroz'], terms: ['sopa de arroz plato hondo', 'sopa de arroz casera', 'sopa de arroz comida colombiana'] },
+  { keys: ['sopa maiz', 'sopa de maiz'], terms: ['sopa de maiz plato hondo', 'sopa de maiz casera', 'corn soup bowl'] },
+  { keys: ['sopa pasta', 'sopa de pasta'], terms: ['sopa de pasta plato hondo', 'sopa de fideos casera', 'noodle soup bowl'] },
+  { keys: ['sopa'], terms: ['sopa casera plato hondo', 'sopa colombiana servida en plato', 'soup bowl food photography'] },
+  { keys: ['mora'], terms: ['jugo de mora vaso', 'bebida de mora restaurante', 'blackberry juice glass'] },
+  { keys: ['pina', 'piña'], terms: ['jugo de piña vaso', 'bebida de piña restaurante', 'pineapple juice glass'] },
+  { keys: ['guayaba'], terms: ['jugo de guayaba vaso', 'bebida de guayaba restaurante', 'guava juice glass'] },
+  { keys: ['hamburguesa', 'burger'], terms: ['hamburguesa servida con papas', 'combo hamburguesa restaurante', 'burger meal restaurant'] }
+];
+
+function foodDictionaryMatches(query = '', description = '') {
+  const base = normalizeFoodText(`${query} ${description}`);
+  return FOOD_IMAGE_DICTIONARY.filter((row) => row.keys.some((key) => base.includes(normalizeFoodText(key))));
+}
+
+function imageSearchTerms(query = '', description = '') {
+  const rawName = String(query || '').trim();
+  const rawDescription = String(description || '').trim();
+  const matches = foodDictionaryMatches(rawName, rawDescription);
+  const negative = '-logo -icono -vector -dibujo -clipart -caricatura -emoji -menu -menú -plantilla -ilustracion -ilustración';
+  const baseQueries = [];
+  if (rawName && rawDescription) baseQueries.push(`${rawName} ${rawDescription} comida real servida en plato foto ${negative}`);
+  if (rawName) baseQueries.push(`${rawName} plato restaurante foto real ${negative}`);
+  if (rawName) baseQueries.push(`${rawName} almuerzo colombiano servido foto ${negative}`);
+  for (const match of matches) for (const term of match.terms) baseQueries.push(`${term} foto real alta calidad ${negative}`);
+  if (rawName) baseQueries.push(`${rawName} food photography plated dish ${negative}`);
+  if (rawName) baseQueries.push(`${rawName} restaurant dish real photo ${negative}`);
+  return [...new Set(baseQueries.map((item) => item.replace(/\s+/g, ' ').trim()).filter(Boolean))].slice(0, 10);
+}
+
+function productWantedWords(originalQuery = '', description = '') {
+  const exact = normalizeFoodText(`${originalQuery} ${description}`).split(' ').filter((word) => word.length > 2);
+  const dictionaryWords = foodDictionaryMatches(originalQuery, description).flatMap((row) => row.terms.join(' ').split(' '));
+  const generic = ['plato','comida','restaurante','almuerzo','servido','foto','real','dish','food','restaurant','plate','served'];
+  return [...new Set([...exact, ...dictionaryWords, ...generic].map(normalizeFoodText).filter((word) => word.length > 2))];
+}
+
+function imageScore(item, originalQuery = '', description = '') {
+  const haystack = normalizeFoodText(`${item.label || ''} ${item.context || ''} ${item.source || ''}`);
+  const wanted = productWantedWords(originalQuery, description);
+  const primary = normalizeFoodText(originalQuery).split(' ').filter((word) => word.length > 2);
+  const badVisual = ['logo','icono','vector','clipart','dibujo','caricatura','emoji','menu','menú','plantilla','ilustracion','ilustración','receta escrita'];
+  let score = 0;
+  for (const word of wanted) if (haystack.includes(word)) score += 4;
+  for (const word of primary) if (haystack.includes(word)) score += 10;
+  for (const word of badVisual) if (haystack.includes(normalizeFoodText(word))) score -= 30;
+  if (/Openverse/i.test(item.source || '')) score += 24;
+  if (/Wikimedia/i.test(item.source || '')) score += 12;
+  if (/Flickr|WordPress|Commons/i.test(item.source || '')) score += 8;
+  return score;
+}
+
+function hostFromUrl(url = '') {
+  try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return ''; }
+}
+
+function isProbablyImageUrl(url = '') {
+  return /^https?:\/\//i.test(url) && !/\.(svg|gif)(\?|$)/i.test(url);
+}
+
+function inferImageExtension(contentType = '', url = '') {
+  if (/png/i.test(contentType) || /\.png(\?|$)/i.test(url)) return '.png';
+  if (/webp/i.test(contentType) || /\.webp(\?|$)/i.test(url)) return '.webp';
+  return '.jpg';
+}
+
+async function downloadImageToUploads(remoteUrl, label = 'imagen') {
+  const url = new URL(remoteUrl);
+  if (!['https:', 'http:'].includes(url.protocol)) throw new Error('URL de imagen no válida.');
+  const response = await fetch(url, { headers: { 'User-Agent': 'QuickLunchDemo/1.0 image importer' } });
+  if (!response.ok) throw new Error('No se pudo descargar la imagen seleccionada.');
+  const contentType = response.headers.get('content-type') || '';
+  if (!contentType.startsWith('image/')) throw new Error('El enlace no corresponde a una imagen.');
+  const arrayBuffer = await response.arrayBuffer();
+  if (arrayBuffer.byteLength > 5 * 1024 * 1024) throw new Error('La imagen supera el tamaño permitido de 5MB.');
+  const folder = path.join(uploadDir, 'quicklunch', 'suggested');
+  fs.mkdirSync(folder, { recursive: true });
+  const ext = inferImageExtension(contentType, remoteUrl);
+  const filename = `${toSlug(label || 'imagen') || 'imagen'}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}${ext}`;
+  fs.writeFileSync(path.join(folder, filename), Buffer.from(arrayBuffer));
+  return `/uploads/quicklunch/suggested/${filename}`;
+}
+
+function hashInt(value = '') {
+  return crypto.createHash('md5').update(String(value)).digest().readUInt32BE(0);
+}
+
+
+const GOOGLE_CSE_API_KEY = process.env.GOOGLE_CSE_API_KEY || '';
+const GOOGLE_CSE_ID = process.env.GOOGLE_CSE_ID || '';
+const IMAGE_SEARCH_DOMAINS = (process.env.QL_IMAGE_SEARCH_DOMAINS || [
+  // Recetas y cocina colombiana/latina
+  'misrecetascolombia.com',
+  'elrinconcolombiano.com',
+  'recetas123.net',
+  'mycolombianrecipes.com',
+  'sweetysalado.com',
+  'antojandoando.com',
+  'colombia.com',
+  'comidascolombianas.com',
+  'recetinas.com',
+  'recetasgratis.net',
+  'cookpad.com',
+  'kiwilimon.com',
+  'quericavida.com',
+  'goya.com',
+  'comedera.com',
+  'paulinacocina.net',
+  'directoalpaladar.com',
+  'bonviveur.es',
+  'hogarmania.com',
+  'cocinatis.com',
+  'recetasdecocina.elmundo.es',
+  '196flavors.com',
+  'allrecipes.com',
+  'blogspot.com',
+  'comida.com',
+  'gastronomia.com',
+  'platos.com',
+  'cocina.com',
+
+  // Supermercados y productos industriales/bebidas
+  'exito.com',
+  'carulla.com',
+  'jumbo.com.co',
+  'olimpica.com',
+  'tiendasd1.com',
+  'alkosto.com',
+  'makro.com.co',
+  'pricesmart.com.co',
+  'farmatodo.com.co',
+  'merqueo.com',
+  'rappi.com.co',
+  'mercadolibre.com.co',
+  'nutresa.com',
+  'postobon.com',
+  'coca-cola.com',
+  'alpina.com'
+].join(','))
+  .split(',')
+  .map((domain) => domain.trim().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/.*$/, '').toLowerCase())
+  .filter(Boolean);
+
+const GENERIC_IMAGE_WORDS = new Set([
+  'plato','platos','comida','comidas','restaurante','restaurantes','almuerzo','corrientazo','corrientazos','servido','servida','servir','foto','real','alta','calidad','casera','casero','colombiano','colombiana','con','para','del','de','la','el','los','las','una','uno','un','y','en','por','al','dish','food','plate','restaurant','served','photo','meal','lunch',
+  'frito','frita','asado','asada','apanado','apanada','crocante','especial','porcion','porción','receta','acompanamiento','acompañamiento'
+]);
+
+function allowedImageDomain(url = '', displayLink = '') {
+  const host = hostFromUrl(url || displayLink).toLowerCase();
+  const display = String(displayLink || '').replace(/^www\./, '').toLowerCase();
+  return IMAGE_SEARCH_DOMAINS.some((domain) => host === domain || host.endsWith(`.${domain}`) || display === domain || display.endsWith(`.${domain}`));
+}
+
+function coreFoodWords(query = '', description = '') {
+  const direct = normalizeFoodText(`${query} ${description}`).split(' ')
+    .filter((word) => word.length > 2 && !GENERIC_IMAGE_WORDS.has(word));
+  const dictionary = foodDictionaryMatches(query, description)
+    .flatMap((row) => row.keys)
+    .flatMap((key) => normalizeFoodText(key).split(' '))
+    .filter((word) => word.length > 2 && !GENERIC_IMAGE_WORDS.has(word));
+  return [...new Set([...direct, ...dictionary])].slice(0, 8);
+}
+
+function googleImageScore(item = {}, query = '', description = '') {
+  const title = item.title || '';
+  const snippet = item.snippet || '';
+  const contextLink = item.image?.contextLink || '';
+  const displayLink = item.displayLink || '';
+  const imageUrl = item.link || '';
+  const haystack = normalizeFoodText(`${title} ${snippet} ${contextLink} ${displayLink} ${imageUrl}`);
+  const words = coreFoodWords(query, description);
+  const badVisual = ['logo','icono','vector','clipart','dibujo','caricatura','emoji','menu','menú','plantilla','ilustracion','ilustración','pdf','mapa','banner','poster','collage','infografia','infografía'];
+  let score = 0;
+  for (const word of words) if (haystack.includes(word)) score += 18;
+  for (const word of normalizeFoodText(query).split(' ').filter(w => w.length > 2)) if (haystack.includes(word)) score += 10;
+  for (const bad of badVisual) if (haystack.includes(normalizeFoodText(bad))) score -= 50;
+  if (allowedImageDomain(contextLink || imageUrl, displayLink)) score += 35;
+  const width = Number(item.image?.width || 0);
+  const height = Number(item.image?.height || 0);
+  if (width >= 500 && height >= 350) score += 8;
+  if (width && height && (width < 250 || height < 180)) score -= 30;
+  if (/googleusercontent|gstatic/i.test(item.image?.thumbnailLink || '')) score += 4;
+  return score;
+}
+
+function googleItemToCandidate(item = {}, query = '', description = '') {
+  const thumbnail = item.image?.thumbnailLink || item.link;
+  const url = item.link || thumbnail;
+  const context = item.image?.contextLink || item.formattedUrl || item.displayLink || '';
+  return {
+    label: item.title || realFoodLabel(query, detectRealFoodProfile(query, description)),
+    url,
+    thumbnail,
+    source: `Google CSE · ${item.displayLink || hostFromUrl(context || url) || 'sitio de referencia'}`,
+    context,
+    attribution: 'Imagen sugerida desde fuentes de cocina, recetas, supermercados o productos configurados en Google Programmable Search.'
+  };
+}
+
+async function fetchGoogleCseCandidates(query = '', description = '') {
+  if (!GOOGLE_CSE_API_KEY || !GOOGLE_CSE_ID) return [];
+  const terms = realFoodTerms(query, description).slice(0, 3);
+  const candidates = [];
+  const baseParams = {
+    key: GOOGLE_CSE_API_KEY,
+    cx: GOOGLE_CSE_ID,
+    searchType: 'image',
+    safe: 'active',
+    imgType: 'photo',
+    imgSize: 'large',
+    hl: 'es',
+    gl: 'co',
+    num: '10'
+  };
+  const requests = [];
+
+  // Primero se consulta el motor configurado directamente con el nombre + descripción.
+  // Luego se refuerza por grupos de dominios para incluir recetas, supermercados y productos industriales.
+  for (const term of terms) {
+    requests.push({ q: term });
+  }
+
+  const domainChunks = [];
+  for (let i = 0; i < IMAGE_SEARCH_DOMAINS.length; i += 8) {
+    domainChunks.push(IMAGE_SEARCH_DOMAINS.slice(i, i + 8));
+  }
+  for (const term of terms.slice(0, 2)) {
+    for (const chunk of domainChunks.slice(0, 5)) {
+      requests.push({ q: `${term} (${chunk.map((d) => `site:${d}`).join(' OR ')})` });
+    }
+  }
+
+  const industrialHints = ['jugo', 'bebida', 'gaseosa', 'agua', 'producto', 'industrial', 'empaque', 'botella', 'lata', 'snack', 'postre'];
+  const normalizedSearch = normalizeFoodText(`${query} ${description}`);
+  const shouldPrioritizeMarkets = industrialHints.some((hint) => normalizedSearch.includes(hint));
+  const domainPriority = shouldPrioritizeMarkets
+    ? IMAGE_SEARCH_DOMAINS.filter((d) => /exito|carulla|jumbo|olimpica|tiendasd1|alkosto|makro|pricesmart|farmatodo|merqueo|rappi|mercadolibre|nutresa|postobon|coca-cola|alpina/.test(d)).concat(IMAGE_SEARCH_DOMAINS)
+    : IMAGE_SEARCH_DOMAINS;
+
+  for (const domain of [...new Set(domainPriority)].slice(0, 18)) {
+    requests.push({ q: `${terms[0] || query}`, siteSearch: domain, siteSearchFilter: 'i' });
+  }
+
+  for (const request of requests.slice(0, 24)) {
+    const params = new URLSearchParams({ ...baseParams, ...request });
+    const json = await fetchJsonSafe(`https://www.googleapis.com/customsearch/v1?${params.toString()}`, { timeout: 6500 });
+    const items = Array.isArray(json?.items) ? json.items : [];
+    const ranked = items
+      .filter((item) => item?.link && item?.image?.thumbnailLink)
+      .filter((item) => allowedImageDomain(item.image?.contextLink || item.link, item.displayLink))
+      .map((item) => ({ item, score: googleImageScore(item, query, description) }))
+      .filter(({ score }) => score >= 15)
+      .sort((a, b) => b.score - a.score)
+      .map(({ item }) => googleItemToCandidate(item, query, description));
+    for (const item of ranked) addRealPhotoCandidate(candidates, item, query, description);
+    if (candidates.length >= 5) break;
+  }
+  return candidates.slice(0, 5);
+}
 
 function sign(account) {
   return jwt.sign({ id: account.id, username: account.username, role: account.role, restaurant_id: account.restaurant_id }, JWT_SECRET, { expiresIn: '12h' });
@@ -111,7 +413,7 @@ function defaultRestaurantSettings(settings = qlSettings()) {
 
 function defaultFees() {
   const s = qlSettings();
-  return { online: moneyInt(s.fees?.online, 500), cash: moneyInt(s.fees?.cash, 1000), commissionPercent: moneyInt(s.fees?.commissionPercent, 5) };
+  const online = moneyInt(s.fees?.online, 1500); return { online: online === 500 ? 1500 : online, cash: moneyInt(s.fees?.cash, 1000), commissionPercent: moneyInt(s.fees?.commissionPercent, 5) };
 }
 
 function getRestaurantId(req) {
@@ -166,7 +468,7 @@ function addRestaurantCredit(userId, restaurantId, amount) {
 function releaseSlot(order) {
   if (!order.pickup_slot) return;
   coreDb.prepare('UPDATE pickup_slots SET reserved = CASE WHEN reserved > 0 THEN reserved - ? ELSE 0 END WHERE restaurant_id=? AND slot_time=?')
-    .run(Math.max(1, Number(order.lunch_count || 1)), order.restaurant_id, order.pickup_slot);
+    .run(1, order.restaurant_id, order.pickup_slot);
 }
 
 function applyPenalty(restaurantId, orderId, reason, points, taxPercent = 0) {
@@ -196,6 +498,43 @@ function settleIfClaimed(orderId) {
 
 function serializeOrder(row) {
   return row ? { ...row, items: parseJson(row.items_json, []), qr: parseJson(row.qr_payload, {}), deliveryValidation: parseJson(row.delivery_validation_json, {}) } : null;
+}
+
+function restaurantRatingSummary(restaurantId) {
+  const row = restaurantsDb.prepare('SELECT COUNT(*) count, COALESCE(AVG(rating),0) avg FROM restaurant_ratings WHERE restaurant_id=?').get(restaurantId);
+  const average = Number(row?.avg || 0);
+  return {
+    average: Number(average.toFixed(2)),
+    count: Number(row?.count || 0),
+    display: Math.floor(average * 2) / 2
+  };
+}
+
+function generateRestaurantDeliveryCode(restaurantId) {
+  for (let i = 0; i < 80; i++) {
+    const value = deliveryCode();
+    const existing = coreDb.prepare("SELECT id FROM orders WHERE restaurant_id=? AND public_code=? AND status NOT IN ('claimed','cancelled','no_show')").get(restaurantId, value);
+    if (!existing) return value;
+  }
+  throw new Error('No se pudo generar un código de entrega único para este restaurante. Intenta nuevamente.');
+}
+
+function decrementMenuStockForOrder(order) {
+  const items = parseJson(order.items_json, []);
+  const touched = new Map();
+  const add = (id, qty = 1) => {
+    const numeric = Number(id || 0);
+    if (!numeric) return;
+    touched.set(numeric, (touched.get(numeric) || 0) + qty);
+  };
+  for (const lunch of items) {
+    if (lunch.complete_plate?.id) add(lunch.complete_plate.id);
+    for (const comp of asArray(lunch.components)) if (!comp.skipped) add(comp.id);
+    for (const extra of asArray(lunch.extras)) add(extra.id);
+  }
+  for (const [id, qty] of touched.entries()) {
+    restaurantsDb.prepare('UPDATE menu_items SET remaining=CASE WHEN remaining >= ? THEN remaining-? ELSE 0 END WHERE id=?').run(qty, qty, id);
+  }
 }
 
 function groupedOrders(rows) {
@@ -257,6 +596,18 @@ function serializeCoupon(row) {
   return row ? { ...row, coverageRestaurants: parseJson(row.coverage_restaurants_json, []), products: parseJson(row.products_json, []), promotionBadge: couponLabel(row) } : null;
 }
 
+function normalizeDateTime(value) {
+  if (!value) return '';
+  const raw = String(value).trim();
+  if (!raw) return '';
+  const normalized = raw.replace('T', ' ').slice(0, 16);
+  return /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(normalized) ? normalized : normalized;
+}
+
+function visibleBenefitName(c = {}) {
+  return couponLabel(c);
+}
+
 function availableWalletCredits(userId, restaurantId) {
   return restaurantsDb.prepare('SELECT * FROM coupon_wallet WHERE user_id=? AND credit_balance>0 ORDER BY redeemed_at ASC').all(userId)
     .filter((w) => !w.restaurant_id || Number(w.restaurant_id) === Number(restaurantId));
@@ -270,25 +621,50 @@ function applyCouponCredits(userId, restaurantId, amount) {
     const take = Math.min(Number(w.credit_balance || 0), remaining);
     restaurantsDb.prepare('UPDATE coupon_wallet SET credit_balance=credit_balance-? WHERE id=?').run(take, w.id);
     remaining -= take;
-    used.push({ code: w.code, amount: take });
+    used.push({ code: w.code, amount: take, source: 'cupón redimido' });
+  }
+  const restaurantCredits = usersDb.prepare('SELECT * FROM restaurant_credits WHERE user_id=? AND restaurant_id=? AND balance>0 ORDER BY updated_at ASC').all(userId, restaurantId);
+  for (const c of restaurantCredits) {
+    if (remaining <= 0) break;
+    const take = Math.min(Number(c.balance || 0), remaining);
+    usersDb.prepare('UPDATE restaurant_credits SET balance=balance-?, updated_at=CURRENT_TIMESTAMP WHERE id=?').run(take, c.id);
+    remaining -= take;
+    used.push({ code: 'CRÉDITO RESTAURANTE', amount: take, source: 'saldo por cancelación' });
+  }
+  const account = usersDb.prepare('SELECT wallet_balance FROM accounts WHERE id=?').get(userId);
+  if (remaining > 0 && Number(account?.wallet_balance || 0) > 0) {
+    const take = Math.min(Number(account.wallet_balance || 0), remaining);
+    usersDb.prepare('UPDATE accounts SET wallet_balance=wallet_balance-? WHERE id=?').run(take, userId);
+    remaining -= take;
+    used.push({ code: 'SALDO GENERAL', amount: take, source: 'saldo general QuickLunch' });
   }
   return { discount: amount - remaining, used };
 }
 
-function automaticDiscounts(userId, restaurantId, subtotal, serviceFee, lunches) {
+function automaticDiscounts(userId, restaurantId, subtotal, serviceFee, lunches = []) {
   const all = restaurantsDb.prepare('SELECT * FROM coupons WHERE active=1 AND is_redeemable=0').all()
     .filter((c) => couponActive(c) && couponCanCover(c, restaurantId));
   let discount = 0; let serviceDiscount = 0; const applied = [];
   const claimedCount = coreDb.prepare("SELECT COUNT(*) count FROM orders WHERE user_id=? AND restaurant_id=? AND status='claimed'").get(userId, restaurantId).count;
+  const lunchText = JSON.stringify(lunches).toLowerCase();
   for (const c of all) {
     if (subtotal < Number(c.min_purchase || 0)) continue;
     if (claimedCount < Number(c.previous_purchases_required || 0)) continue;
+    const products = parseJson(c.products_json, []);
+    let eligibleBase = subtotal;
+    if (products.length) {
+      const productTokens = products.map((p) => String(p).toLowerCase());
+      const matches = productTokens.some((p) => lunchText.includes(`"id":${p}`) || lunchText.includes(p));
+      if (!matches) continue;
+      eligibleBase = lunches.filter((l) => productTokens.some((p) => JSON.stringify(l).toLowerCase().includes(p))).reduce((sum, l) => sum + Number(l.total || 0), 0) || subtotal;
+    }
     let d = 0; let sd = 0;
-    if (c.effect_type === 'discount_percent') d = Math.round(subtotal * Number(c.effect_value || c.discount_value || 0) / 100);
-    if (c.effect_type === 'discount_fixed') d = Math.min(subtotal, Number(c.effect_value || c.discount_value || 0));
+    if (c.effect_type === 'discount_percent') d = Math.round(eligibleBase * Number(c.effect_value || c.discount_value || 0) / 100);
+    if (c.effect_type === 'discount_fixed') d = Math.min(eligibleBase, Number(c.effect_value || c.discount_value || 0));
+    if (c.effect_type === 'credit_fixed') d = Math.min(eligibleBase, Number(c.effect_value || c.discount_value || 0));
     if (c.effect_type === 'service_free') sd = serviceFee;
     if (c.effect_type === 'service_percent') sd = Math.round(serviceFee * Number(c.effect_value || c.discount_value || 0) / 100);
-    if (d || sd) { discount += d; serviceDiscount += sd; applied.push({ code: c.code, name: c.name || c.description, discount: d, serviceDiscount: sd }); }
+    if (d || sd) { discount += d; serviceDiscount += sd; applied.push({ coupon_id: c.id, code: c.code, name: c.name || c.description, discount: d, serviceDiscount: sd, amount: d + sd }); }
   }
   return { discount, serviceDiscount, applied };
 }
@@ -320,7 +696,7 @@ function orderSupportOptions(order) {
   return ['Soporte general'];
 }
 
-app.get('/api/health', (_, res) => res.json({ ok: true, name: 'QuickLunch API', version: '1.0.7', time: new Date().toISOString() }));
+app.get('/api/health', (_, res) => res.json({ ok: true, name: 'QuickLunch API', version: '1.0.23', time: new Date().toISOString() }));
 app.get('/api/settings', (_, res) => res.json(qlSettings()));
 
 app.post('/api/auth/login', (req, res) => {
@@ -328,7 +704,7 @@ app.post('/api/auth/login', (req, res) => {
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ message: 'Datos incompletos.' });
   if (!requireCali(parsed.data.city)) return res.status(403).json({ message: 'Ciudad próximamente disponible.' });
-  const account = usersDb.prepare('SELECT * FROM accounts WHERE username = ? OR email = ?').get(parsed.data.username, parsed.data.username);
+  const account = usersDb.prepare('SELECT * FROM accounts WHERE lower(username) = lower(?) OR lower(email) = lower(?)').get(parsed.data.username, parsed.data.username);
   if (!account || !bcrypt.compareSync(parsed.data.password, account.password_hash)) return res.status(401).json({ message: 'Usuario o contraseña incorrectos.' });
   if (account.status !== 'active') return res.status(403).json({ message: 'Cuenta bloqueada o inactiva.' });
   usersDb.prepare('INSERT INTO customer_activity (user_id,event_type,detail_json) VALUES (?,?,?)').run(account.id, 'login', jsonString({ role: account.role, city: parsed.data.city || 'Cali' }));
@@ -355,7 +731,7 @@ app.post('/api/auth/password-recovery', (req, res) => {
   const schema = z.object({ identifier: z.string().min(3) });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ message: 'Escribe únicamente el usuario.' });
-  const account = usersDb.prepare('SELECT * FROM accounts WHERE username=?').get(parsed.data.identifier);
+  const account = usersDb.prepare('SELECT * FROM accounts WHERE lower(username)=lower(?)').get(parsed.data.identifier);
   if (!account) return res.status(404).json({ message: 'No encontramos una cuenta con ese usuario.' });
   const visiblePassword = account.password_plain || (account.username === 'nicocr' ? 'quick2026' : 'No disponible para cuentas antiguas. Cámbiala desde el panel admin.');
   usersDb.prepare('INSERT INTO customer_activity (user_id,event_type,detail_json) VALUES (?,?,?)').run(account.id, 'password_recovery_demo', jsonString({ shown: true }));
@@ -391,10 +767,13 @@ app.post('/api/restaurants/apply', (req, res) => {
 });
 
 app.get('/api/restaurants/public', (_, res) => {
+  const todayDate = getToday();
   const rows = restaurantsDb.prepare("SELECT * FROM restaurants WHERE status='active' ORDER BY created_at DESC").all()
     .map((r) => {
       const promo = bestPromotion(r.id);
-      return { ...serializeRestaurant(r), promotion: serializeCoupon(promo) };
+      const todayMenu = restaurantsDb.prepare("SELECT id,menu_date,title,status FROM daily_menus WHERE restaurant_id=? AND menu_date=? AND status='published' ORDER BY id DESC LIMIT 1").get(r.id, todayDate);
+      const latestMenu = restaurantsDb.prepare("SELECT id,menu_date,title,status FROM daily_menus WHERE restaurant_id=? AND status='published' ORDER BY menu_date DESC, id DESC LIMIT 1").get(r.id);
+      return { ...serializeRestaurant(r), rating: restaurantRatingSummary(r.id), menuPublished: !!todayMenu, todayMenu, latestMenu, promotion: serializeCoupon(promo) };
     })
     .sort((a,b) => couponWeight(b.promotion) - couponWeight(a.promotion));
   res.json(rows);
@@ -406,7 +785,7 @@ app.get('/api/restaurants/:slug/public', (req, res) => {
   const date = req.query.date || getToday();
   const menu = restaurantsDb.prepare("SELECT * FROM daily_menus WHERE restaurant_id=? AND menu_date=? AND status='published' ORDER BY id DESC LIMIT 1").get(restaurant.id, date);
   const items = menu ? restaurantsDb.prepare('SELECT * FROM menu_items WHERE menu_id=?').all(menu.id).map((x) => ({ ...x, plate: parseJson(x.plate_json) })) : [];
-  res.json({ restaurant: { ...restaurant, promotion: serializeCoupon(bestPromotion(restaurant.id)) }, menu: menu ? { ...menu, items } : null });
+  res.json({ restaurant: { ...restaurant, rating: restaurantRatingSummary(restaurant.id), promotion: serializeCoupon(bestPromotion(restaurant.id)) }, menu: menu ? { ...menu, items } : null });
 });
 
 app.get('/api/restaurants/:id/slots', (req, res) => {
@@ -414,7 +793,7 @@ app.get('/api/restaurants/:id/slots', (req, res) => {
   if (!restaurant) return res.status(404).json({ message: 'Restaurante no encontrado.' });
   const date = req.query.date || getToday();
   const settings = { ...defaultRestaurantSettings(), ...parseJson(restaurant.settings_json, {}) };
-  const lunchCount = Math.max(1, Number(req.query.lunch_count || 1));
+  const lunchCount = 1; // Los cupos son por pedido, no por cantidad de almuerzos dentro del pedido.
   const slots = [];
   for (const range of settings.pickup?.ranges || defaultRestaurantSettings().pickup.ranges) {
     const interval = Number(range.intervalMinutes || 10);
@@ -427,7 +806,7 @@ app.get('/api/restaurants/:id/slots', (req, res) => {
       const dbSlot = coreDb.prepare('SELECT * FROM pickup_slots WHERE restaurant_id=? AND slot_time=?').get(req.params.id, slotTime);
       const reserved = Number(dbSlot?.reserved || 0);
       const available = capacity - reserved;
-      if (available >= lunchCount) slots.push({ time, capacity, reserved, available, intervalMinutes: interval });
+      if (available >= 1) slots.push({ time, capacity, reserved, available, intervalMinutes: interval });
     }
   }
   res.json(slots);
@@ -435,7 +814,7 @@ app.get('/api/restaurants/:id/slots', (req, res) => {
 
 // ORDERS
 app.post('/api/orders', auth(['customer', 'owner']), (req, res) => {
-  const schema = z.object({ restaurant_id: z.number(), menu_id: z.number().optional().nullable(), pickup_date: z.string(), pickup_time: z.string(), payment_method: z.enum(['online', 'cash']), lunches: z.array(z.any()).min(1).max(10), coupon_code: z.string().optional(), notes: z.string().optional() });
+  const schema = z.object({ restaurant_id: z.number(), menu_id: z.number().optional().nullable(), pickup_date: z.string(), pickup_time: z.string(), payment_method: z.enum(['online', 'cash']), lunches: z.array(z.any()).min(1).max(10), coupon_code: z.string().optional(), notes: z.string().optional(), use_credits: z.boolean().default(false) });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ message: 'Pedido incompleto o supera el máximo de 10 almuerzos.' });
   const d = parsed.data;
@@ -459,7 +838,7 @@ app.post('/api/orders', auth(['customer', 'owner']), (req, res) => {
     return rows;
   })();
   const chosen = slots.find((s) => s.slot === slotTime);
-  if (!chosen || chosen.available < lunchCount) return res.status(409).json({ message: 'Ese horario ya no tiene cupos suficientes.' });
+  if (!chosen || chosen.available < 1) return res.status(409).json({ message: 'Ese horario ya no tiene cupos disponibles.' });
 
   const subtotal = d.lunches.reduce((sum, lunch) => sum + moneyInt(lunch.total, 0), 0);
   const serviceFee = calculateFee(d.payment_method, lunchCount, d.restaurant_id);
@@ -473,7 +852,7 @@ app.post('/api/orders', auth(['customer', 'owner']), (req, res) => {
         if (wallet) {
           const take = Math.min(subtotal + serviceFee, Number(wallet.credit_balance || 0));
           restaurantsDb.prepare('UPDATE coupon_wallet SET credit_balance=credit_balance-? WHERE id=?').run(take, wallet.id);
-          discount += take; couponUse.push({ code: coupon.code, amount: take, source: 'crédito redimido' });
+          discount += take; couponUse.push({ coupon_id: coupon.id, code: coupon.code, amount: take, source: 'crédito redimido' });
         }
       } else {
         const val = Number(coupon.effect_value || coupon.discount_value || 0);
@@ -481,7 +860,7 @@ app.post('/api/orders', auth(['customer', 'owner']), (req, res) => {
         else if (coupon.effect_type === 'service_free') discount += serviceFee;
         else if (coupon.effect_type === 'service_percent') discount += Math.round(serviceFee * val / 100);
         else discount += Math.min(subtotal, val);
-        couponUse.push({ code: coupon.code, amount: discount, source: 'cupón directo' });
+        couponUse.push({ coupon_id: coupon.id, code: coupon.code, amount: discount, source: 'cupón directo' });
       }
       restaurantsDb.prepare('UPDATE coupons SET current_uses=current_uses+1 WHERE id=?').run(coupon.id);
     }
@@ -489,44 +868,40 @@ app.post('/api/orders', auth(['customer', 'owner']), (req, res) => {
   const auto = automaticDiscounts(req.user.id, d.restaurant_id, subtotal, serviceFee, d.lunches);
   discount += auto.discount + auto.serviceDiscount;
   couponUse.push(...auto.applied);
-  const walletAuto = applyCouponCredits(req.user.id, d.restaurant_id, Math.max(0, subtotal + serviceFee - discount));
+  const walletAuto = d.use_credits ? applyCouponCredits(req.user.id, d.restaurant_id, Math.max(0, subtotal + serviceFee - discount)) : { discount: 0, used: [] };
   discount += walletAuto.discount;
-  couponUse.push(...walletAuto.used);
+  couponUse.push(...walletAuto.used.map((x) => ({ ...x, source: 'créditos usados por decisión del cliente' })));
   const total = Math.max(0, subtotal + serviceFee - discount);
-  const publicCode = code('QL');
-  const qrPayload = { public_code: publicCode, order_id: null, restaurant_id: d.restaurant_id, url: `${CLIENT_ORIGIN}/confirmar/${publicCode}`, rule: 'NO_ENTREGA_SIN_ESCANEO' };
+  const publicCode = generateRestaurantDeliveryCode(d.restaurant_id);
+  const qrPayload = { public_code: publicCode, order_id: null, restaurant_id: d.restaurant_id, url: `${CLIENT_ORIGIN}/confirmar/${publicCode}`, rule: 'VALIDACION_CON_CODIGO_DE_6_DIGITOS' };
   const info = coreDb.prepare(`INSERT INTO orders (public_code,user_id,restaurant_id,restaurant_name,customer_name,menu_id,pickup_slot,payment_method,payment_status,subtotal,service_fee,discount,total,lunch_count,qr_payload,items_json,notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
     .run(publicCode, req.user.id, d.restaurant_id, restaurant.name, req.user.full_name || req.user.username, d.menu_id || null, slotTime, d.payment_method, d.payment_method === 'online' ? 'paid_held' : 'cash_pending', subtotal, serviceFee, discount, total, lunchCount, jsonString(qrPayload), jsonString(d.lunches, []), d.notes || '');
   qrPayload.order_id = info.lastInsertRowid;
   coreDb.prepare('UPDATE orders SET qr_payload=? WHERE id=?').run(jsonString(qrPayload), info.lastInsertRowid);
   const existingSlot = coreDb.prepare('SELECT * FROM pickup_slots WHERE restaurant_id=? AND slot_time=?').get(d.restaurant_id, slotTime);
-  if (existingSlot) coreDb.prepare('UPDATE pickup_slots SET reserved=reserved+? WHERE id=?').run(lunchCount, existingSlot.id);
-  else coreDb.prepare('INSERT INTO pickup_slots (restaurant_id,slot_time,capacity,reserved) VALUES (?,?,?,?)').run(d.restaurant_id, slotTime, chosen.capacity, lunchCount);
+  if (existingSlot) coreDb.prepare('UPDATE pickup_slots SET reserved=reserved+1 WHERE id=?').run(existingSlot.id);
+  else coreDb.prepare('INSERT INTO pickup_slots (restaurant_id,slot_time,capacity,reserved) VALUES (?,?,?,1)').run(d.restaurant_id, slotTime, chosen.capacity);
   if (d.payment_method === 'online') coreDb.prepare('INSERT INTO payments (order_id,gateway,method_detail,amount,status,transaction_ref) VALUES (?,?,?,?,?,?)').run(info.lastInsertRowid, 'QuickLunch Demo Gateway', 'Tarjeta / Nequi / PSE demo', total, 'paid_held', code('PAY'));
+  for (const c of couponUse) {
+    if (c.coupon_id) {
+      const coupon = restaurantsDb.prepare('SELECT * FROM coupons WHERE id=?').get(c.coupon_id);
+      recordCouponUsage(coupon, req.user.id, { orderId: info.lastInsertRowid, restaurantId: d.restaurant_id, usageType: 'compra', amount: c.amount || 0 });
+    }
+  }
   usersDb.prepare('INSERT INTO customer_activity (user_id,event_type,detail_json) VALUES (?,?,?)').run(req.user.id, 'order_created', jsonString({ order_id: info.lastInsertRowid, restaurant_id: d.restaurant_id, total, lunchCount }));
   res.status(201).json(serializeOrder(coreDb.prepare('SELECT * FROM orders WHERE id=?').get(info.lastInsertRowid)));
 });
 
 app.get('/api/orders/mine', auth(), (req, res) => {
   const rows = req.user.role === 'customer'
-    ? coreDb.prepare('SELECT * FROM orders WHERE user_id=? ORDER BY created_at DESC').all(req.user.id)
-    : coreDb.prepare('SELECT * FROM orders ORDER BY created_at DESC LIMIT 150').all();
+    ? coreDb.prepare("SELECT * FROM orders WHERE user_id=? ORDER BY CASE WHEN status IN ('claimed','cancelled','no_show') THEN 1 ELSE 0 END, pickup_slot ASC, created_at DESC").all(req.user.id)
+    : coreDb.prepare("SELECT * FROM orders ORDER BY CASE WHEN status IN ('claimed','cancelled','no_show') THEN 1 ELSE 0 END, pickup_slot ASC, created_at DESC LIMIT 150").all();
   res.json(rows.map(serializeOrder));
-});
-
-app.get('/api/orders/:id/qr', auth(), async (req, res) => {
-  const order = coreDb.prepare('SELECT * FROM orders WHERE id=?').get(req.params.id);
-  if (!order) return res.status(404).json({ message: 'Pedido no encontrado.' });
-  if (req.user.role === 'customer' && order.user_id !== req.user.id) return res.status(403).json({ message: 'No autorizado.' });
-  const text = `${CLIENT_ORIGIN}/confirmar/${order.public_code}`;
-  const png = await QRCode.toBuffer(text, { errorCorrectionLevel: 'M', width: 360, margin: 2 });
-  res.setHeader('Content-Type', 'image/png');
-  res.send(png);
 });
 
 app.get('/api/orders/confirm/:code', (req, res) => {
   const order = coreDb.prepare('SELECT * FROM orders WHERE public_code=?').get(req.params.code);
-  if (!order) return res.status(404).json({ message: 'QR no encontrado.' });
+  if (!order) return res.status(404).json({ message: 'Código no encontrado.' });
   res.json(serializeOrder(order));
 });
 
@@ -558,8 +933,8 @@ app.patch('/api/orders/:id', auth(['customer', 'owner']), (req, res) => {
   const serviceFee = calculateFee(paymentMethod, lunchCount, order.restaurant_id);
   const total = subtotal + serviceFee - Number(order.discount || 0);
   const existingSlot = coreDb.prepare('SELECT * FROM pickup_slots WHERE restaurant_id=? AND slot_time=?').get(order.restaurant_id, pickupSlot);
-  if (existingSlot) coreDb.prepare('UPDATE pickup_slots SET reserved=reserved+? WHERE id=?').run(lunchCount, existingSlot.id);
-  else coreDb.prepare('INSERT INTO pickup_slots (restaurant_id,slot_time,capacity,reserved) VALUES (?,?,10,?)').run(order.restaurant_id, pickupSlot, lunchCount);
+  if (existingSlot) coreDb.prepare('UPDATE pickup_slots SET reserved=reserved+1 WHERE id=?').run(existingSlot.id);
+  else coreDb.prepare('INSERT INTO pickup_slots (restaurant_id,slot_time,capacity,reserved) VALUES (?,?,10,1)').run(order.restaurant_id, pickupSlot);
   coreDb.prepare('UPDATE orders SET pickup_slot=?, payment_method=?, subtotal=?, service_fee=?, total=?, lunch_count=?, items_json=?, notes=?, updated_at=CURRENT_TIMESTAMP WHERE id=?')
     .run(pickupSlot, paymentMethod, subtotal, serviceFee, total, lunchCount, jsonString(lunches), req.body.notes ?? order.notes, order.id);
   res.json(serializeOrder(coreDb.prepare('SELECT * FROM orders WHERE id=?').get(order.id)));
@@ -587,11 +962,13 @@ app.post('/api/orders/:id/rating', auth(['customer', 'owner']), (req, res) => {
 
 
 app.get('/api/customer/credits', auth(['customer', 'owner']), (req, res) => {
-  const restaurantCredits = usersDb.prepare('SELECT * FROM restaurant_credits WHERE user_id=? ORDER BY updated_at DESC').all(req.user.id)
+  const fresh = usersDb.prepare('SELECT wallet_balance FROM accounts WHERE id=?').get(req.user.id);
+  const general = Number(fresh?.wallet_balance || 0) > 0 ? [{ id: 'general', restaurant_id: null, balance: fresh.wallet_balance, source:'saldo general', restaurant_name:'Toda QuickLunch' }] : [];
+  const restaurantCredits = usersDb.prepare('SELECT * FROM restaurant_credits WHERE user_id=? AND balance>0 ORDER BY updated_at DESC').all(req.user.id)
     .map((c) => ({ ...c, balance: c.balance, source:'cancelación', restaurant_name: restaurantsDb.prepare('SELECT name FROM restaurants WHERE id=?').get(c.restaurant_id)?.name || `Restaurante ${c.restaurant_id}` }));
   const couponCredits = restaurantsDb.prepare('SELECT * FROM coupon_wallet WHERE user_id=? AND credit_balance>0 ORDER BY redeemed_at DESC').all(req.user.id)
     .map((c) => ({ ...c, balance: c.credit_balance, source:'cupón', restaurant_name: c.restaurant_id ? restaurantsDb.prepare('SELECT name FROM restaurants WHERE id=?').get(c.restaurant_id)?.name : 'Toda la app' }));
-  res.json([...restaurantCredits, ...couponCredits]);
+  res.json([...general, ...restaurantCredits, ...couponCredits]);
 });
 
 app.get('/api/customer/coupons', auth(['customer', 'owner']), (req, res) => {
@@ -599,6 +976,11 @@ app.get('/api/customer/coupons', auth(['customer', 'owner']), (req, res) => {
     .filter(couponActive).map(serializeCoupon);
   const wallet = restaurantsDb.prepare('SELECT * FROM coupon_wallet WHERE user_id=? AND credit_balance>0 ORDER BY redeemed_at DESC').all(req.user.id);
   res.json({ available: rows, wallet });
+});
+
+app.post('/api/support/upload', auth(['customer','owner','admin']), upload.single('image'), (req, res) => {
+  if (!req.file) return res.status(400).json({ message: 'Adjunta una imagen válida.' });
+  res.status(201).json({ url: `/uploads/quicklunch/${req.file.filename}`, filename: req.file.filename });
 });
 
 // SUPPORT
@@ -623,14 +1005,24 @@ app.get('/api/support/threads', auth(), (req, res) => {
   if (req.user.role === 'customer') rows = coreDb.prepare('SELECT * FROM support_threads WHERE user_id=? ORDER BY updated_at DESC').all(req.user.id);
   else if (RESTAURANT_ROLES.includes(req.user.role) && req.user.role !== 'owner') rows = coreDb.prepare('SELECT * FROM support_threads WHERE restaurant_id=? AND restaurant_involved=1 ORDER BY updated_at DESC').all(req.user.restaurant_id);
   else rows = coreDb.prepare('SELECT * FROM support_threads ORDER BY updated_at DESC').all();
-  res.json(rows.map((t) => ({ ...t, attachments: parseJson(t.attachments_json, []), resolution: parseJson(t.resolution_json, {}), messages: coreDb.prepare('SELECT * FROM support_messages WHERE thread_id=? ORDER BY created_at ASC').all(t.id) })));
+  const serializeThread = (t) => {
+    let messages = coreDb.prepare('SELECT * FROM support_messages WHERE thread_id=? ORDER BY created_at ASC').all(t.id);
+    if (req.user.role === 'customer') messages = messages.filter((m) => m.channel === 'customer');
+    else if (RESTAURANT_ROLES.includes(req.user.role) && req.user.role !== 'owner') messages = messages.filter((m) => m.channel === 'restaurant');
+    return { ...t, attachments: parseJson(t.attachments_json, []), resolution: parseJson(t.resolution_json, {}), messages };
+  };
+  res.json(rows.map(serializeThread));
 });
 
 app.post('/api/support/threads/:id/messages', auth(), (req, res) => {
   const thread = coreDb.prepare('SELECT * FROM support_threads WHERE id=?').get(req.params.id);
   if (!thread) return res.status(404).json({ message: 'Caso no encontrado.' });
-  const channel = req.body.channel || (req.user.role === 'customer' ? 'customer' : req.user.role.includes('restaurant') ? 'restaurant' : 'admin');
-  if (channel === 'restaurant' && !thread.restaurant_involved && !ADMIN_ROLES.includes(req.user.role) && req.user.role !== 'owner') return res.status(403).json({ message: 'El restaurante todavía no fue implicado por QuickLunch.' });
+  if (thread.status === 'resolved' && !['owner','admin'].includes(req.user.role)) return res.status(409).json({ message: 'Este caso ya fue resuelto. Solo QuickLunch puede reabrirlo.' });
+  if (thread.status === 'resolved' && ['owner','admin'].includes(req.user.role) && !req.body.reopen) return res.status(409).json({ message: 'Este caso está resuelto. Reábrelo antes de escribir.' });
+  let channel = req.body.channel || (req.user.role === 'customer' ? 'customer' : req.user.role.includes('restaurant') ? 'restaurant' : 'customer');
+  if (req.user.role === 'customer') channel = 'customer';
+  if (RESTAURANT_ROLES.includes(req.user.role) && req.user.role !== 'owner') channel = 'restaurant';
+  if (channel === 'restaurant' && !thread.restaurant_involved) return res.status(403).json({ message: 'El restaurante todavía no fue implicado por QuickLunch.' });
   coreDb.prepare('INSERT INTO support_messages (thread_id,sender_role,sender_name,channel,body) VALUES (?,?,?,?,?)').run(req.params.id, req.user.role, req.user.full_name || req.user.username, channel, req.body.body || 'Mensaje de soporte');
   coreDb.prepare('UPDATE support_threads SET updated_at=CURRENT_TIMESTAMP WHERE id=?').run(req.params.id);
   res.json({ ok: true });
@@ -651,11 +1043,15 @@ app.patch('/api/support/threads/:id/action', auth(ADMIN_ROLES), (req, res) => {
     actions.actions.push({ type: 'recompensar_usuario', amount, by: req.user.username, at: new Date().toISOString() });
   }
   if (req.body.sanction_restaurant && thread.restaurant_id) {
+    const amount = moneyInt(req.body.penalty_amount, req.body.sanction_amount || 0);
     const points = -Math.abs(moneyInt(req.body.penalty_points, 1));
-    applyPenalty(thread.restaurant_id, thread.order_id, req.body.penalty_reason || 'Sanción aplicada desde soporte QuickLunch', points, moneyInt(req.body.tax_percent, 0));
-    actions.actions.push({ type: 'sancionar_restaurante', points, by: req.user.username, at: new Date().toISOString() });
+    restaurantsDb.prepare('INSERT INTO restaurant_penalties (restaurant_id,order_id,reason,points,tax_percent,tax_amount) VALUES (?,?,?,?,?,?)')
+      .run(thread.restaurant_id, thread.order_id || null, req.body.penalty_reason || 'Sanción aplicada desde soporte QuickLunch', points, 0, amount);
+    restaurantsDb.prepare('UPDATE restaurants SET prestige_points=prestige_points+? WHERE id=?').run(points, thread.restaurant_id);
+    actions.actions.push({ type: 'sancionar_restaurante', points, amount, by: req.user.username, at: new Date().toISOString() });
   }
   if (req.body.deny_request) actions.actions.push({ type: 'negar_solicitud_usuario', by: req.user.username, at: new Date().toISOString(), reason: req.body.reason || '' });
+  if (req.body.reopen) coreDb.prepare("UPDATE support_threads SET status='open' WHERE id=?").run(thread.id);
   if (req.body.resolve) coreDb.prepare("UPDATE support_threads SET status='resolved' WHERE id=?").run(thread.id);
   coreDb.prepare('UPDATE support_threads SET resolution_json=?, updated_at=CURRENT_TIMESTAMP WHERE id=?').run(jsonString(actions), thread.id);
   res.json({ ok: true, resolution: actions });
@@ -698,7 +1094,7 @@ app.post('/api/admin/users', auth(ADMIN_ROLES), (req, res) => {
   if (!parsed.success) return res.status(400).json({ message: 'Revisa nombre, usuario, correo, contraseña y rol.' });
   const d = parsed.data;
   if (req.user.role !== 'owner' && ['owner','admin'].includes(d.role)) return res.status(403).json({ message: 'Un administrador no puede crear owners ni administradores.' });
-  if (usersDb.prepare('SELECT id FROM accounts WHERE username=? OR email=?').get(d.username, d.email)) return res.status(409).json({ message: 'Ese usuario o correo ya existe. No se creó la cuenta.' });
+  if (usersDb.prepare('SELECT id FROM accounts WHERE lower(username)=lower(?) OR lower(email)=lower(?)').get(d.username, d.email)) return res.status(409).json({ message: 'Ese usuario o correo ya existe. No se creó la cuenta.' });
   const restaurantId = d.restaurant_id ? Number(d.restaurant_id) : null;
   if (['restaurant_owner','restaurant_staff'].includes(d.role) && restaurantId && !restaurantsDb.prepare('SELECT id FROM restaurants WHERE id=?').get(restaurantId)) return res.status(404).json({ message: 'El restaurante asociado no existe.' });
   const info = usersDb.prepare(`INSERT INTO accounts (username,email,phone,password_hash,password_plain,role,role_label,status,city,full_name,restaurant_id,consent_analytics,wallet_balance,preferences_json,permissions_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
@@ -709,13 +1105,37 @@ app.post('/api/admin/users', auth(ADMIN_ROLES), (req, res) => {
 app.patch('/api/admin/users/:id', auth(ADMIN_ROLES), (req, res) => {
   const target = usersDb.prepare('SELECT * FROM accounts WHERE id=?').get(req.params.id);
   if (!target) return res.status(404).json({ message: 'Usuario no encontrado.' });
+  if (req.user.role !== 'owner' && ['owner','admin'].includes(target.role)) return res.status(403).json({ message: 'Un administrador no puede modificar owners ni administradores.' });
   const updates = []; const values = [];
-  if (req.body.status !== undefined) { updates.push('status=?'); values.push(req.body.status); }
+  const direct = ['full_name','phone','status'];
+  for (const k of direct) {
+    if (req.body[k] !== undefined) { updates.push(`${k}=?`); values.push(req.body[k]); }
+  }
+  if (req.body.username !== undefined) {
+    const username = cleanUser(req.body.username);
+    if (username.length < 3) return res.status(400).json({ message: 'El usuario debe tener mínimo 3 caracteres.' });
+    const duplicate = usersDb.prepare('SELECT id FROM accounts WHERE lower(username)=lower(?) AND id<>?').get(username, target.id);
+    if (duplicate) return res.status(409).json({ message: 'Ese usuario ya existe.' });
+    updates.push('username=?'); values.push(username);
+  }
+  if (req.body.email !== undefined) {
+    const email = cleanUser(req.body.email);
+    if (!email.includes('@')) return res.status(400).json({ message: 'El correo no es válido.' });
+    const duplicate = usersDb.prepare('SELECT id FROM accounts WHERE lower(email)=lower(?) AND id<>?').get(email, target.id);
+    if (duplicate) return res.status(409).json({ message: 'Ese correo ya existe.' });
+    updates.push('email=?'); values.push(email);
+  }
+  if (req.body.password) {
+    if (String(req.body.password).length < 6) return res.status(400).json({ message: 'La contraseña debe tener mínimo 6 caracteres.' });
+    updates.push('password_hash=?'); values.push(bcrypt.hashSync(String(req.body.password), 10));
+    updates.push('password_plain=?'); values.push(String(req.body.password));
+  }
   if (req.body.wallet_balance !== undefined) { updates.push('wallet_balance=?'); values.push(moneyInt(req.body.wallet_balance)); }
   if (req.body.wallet_adjustment !== undefined) { updates.push('wallet_balance=wallet_balance+?'); values.push(Number(req.body.wallet_adjustment)); }
   if (req.body.role !== undefined || req.body.restaurant_id !== undefined || req.body.role_label !== undefined) {
     if (req.user.role !== 'owner') return res.status(403).json({ message: 'Solo el owner puede modificar roles.' });
     const role = req.body.role || target.role;
+    if (!['owner','admin','restaurant_owner','restaurant_staff','customer'].includes(role)) return res.status(400).json({ message: 'Rol inválido.' });
     updates.push('role=?'); values.push(role);
     updates.push('role_label=?'); values.push(req.body.role_label || ROLE_LABELS[role] || role);
     updates.push('restaurant_id=?'); values.push(req.body.restaurant_id || null);
@@ -723,7 +1143,16 @@ app.patch('/api/admin/users/:id', auth(ADMIN_ROLES), (req, res) => {
   if (!updates.length) return res.status(400).json({ message: 'No hay cambios.' });
   values.push(req.params.id);
   usersDb.prepare(`UPDATE accounts SET ${updates.join(', ')}, updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(...values);
-  res.json(serializeAccount(usersDb.prepare('SELECT * FROM accounts WHERE id=?').get(req.params.id)));
+  res.json({ message: 'Usuario actualizado.', user: serializeAccount(usersDb.prepare('SELECT * FROM accounts WHERE id=?').get(req.params.id)) });
+});
+
+app.delete('/api/admin/users/:id', auth(ADMIN_ROLES), (req, res) => {
+  const target = usersDb.prepare('SELECT * FROM accounts WHERE id=?').get(req.params.id);
+  if (!target) return res.status(404).json({ message: 'Usuario no encontrado.' });
+  if (Number(target.id) === Number(req.user.id)) return res.status(409).json({ message: 'No puedes eliminar tu propia sesión.' });
+  if (req.user.role !== 'owner' && ['owner','admin'].includes(target.role)) return res.status(403).json({ message: 'Un administrador no puede eliminar owners ni administradores.' });
+  usersDb.prepare("UPDATE accounts SET status='inactive', restaurant_id=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?").run(target.id);
+  res.json({ ok: true, message: 'Usuario eliminado/inactivado correctamente.' });
 });
 
 app.get('/api/admin/restaurants', auth(ADMIN_ROLES), (_, res) => {
@@ -737,7 +1166,7 @@ app.post('/api/admin/restaurants', auth(ADMIN_ROLES), (req, res) => {
   const slug = toSlug(b.slug || b.name);
   if (!b.name || !slug) return res.status(400).json({ message: 'Escribe el nombre y la dirección URL del restaurante.' });
   if (restaurantsDb.prepare('SELECT id FROM restaurants WHERE slug=?').get(slug)) return res.status(409).json({ message: 'Ya existe un restaurante con esa URL. No se creó el restaurante.' });
-  if (b.manager_username && usersDb.prepare('SELECT id FROM accounts WHERE username=? OR email=?').get(b.manager_username, b.manager_email || `${b.manager_username}@quicklunch.local`)) return res.status(409).json({ message: 'El usuario o correo del dueño gestor ya existe. No se creó el restaurante.' });
+  if (b.manager_username && usersDb.prepare('SELECT id FROM accounts WHERE lower(username)=lower(?) OR lower(email)=lower(?)').get(b.manager_username, b.manager_email || `${b.manager_username}@quicklunch.local`)) return res.status(409).json({ message: 'El usuario o correo del dueño gestor ya existe. No se creó el restaurante.' });
   try {
     const info = restaurantsDb.prepare(`INSERT INTO restaurants (name,slug,city,address,phone,email,owner_name,owner_document,legal_representative,nit,chamber_commerce,rut,sanitary_concept,firefighter_certificate,land_use_concept,police_opening_notice,food_handler_certificates,personal_data_policy_url,association_valid_until,status,profile_json,design_json,opening_hours_json,settings_json,fees_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
       .run(b.name, slug, 'Cali', b.address || 'Dirección pendiente', b.phone || '', b.email || '', b.owner_name || '', b.owner_document || '', b.legal_representative || b.owner_name || '', b.nit || '', b.chamber_commerce || '', b.rut || '', b.sanitary_concept || '', b.firefighter_certificate || '', b.land_use_concept || '', b.police_opening_notice || '', b.food_handler_certificates || '', b.personal_data_policy_url || '', b.association_valid_until || '', b.status || 'active', jsonString({ description: 'Corrientazo aliado a QuickLunch' }), jsonString({}), jsonString({}), jsonString(defaultRestaurantSettings()), jsonString(defaultFees()));
@@ -840,7 +1269,7 @@ app.get('/api/ai/insights', auth(), (req, res) => {
     const summary = coreDb.prepare("SELECT COUNT(*) orders, SUM(CASE WHEN status='delayed' THEN 1 ELSE 0 END) delayed, SUM(CASE WHEN status='cancelled' THEN 1 ELSE 0 END) cancelled, COALESCE(SUM(CASE WHEN status='claimed' THEN subtotal ELSE 0 END),0) released FROM orders WHERE restaurant_id=?").get(id);
     return res.json({ scope: 'restaurante', insights: [
       `Pedidos totales monitoreados: ${summary.orders || 0}.`,
-      `Dinero liberado por QR reclamado: ${Number(summary.released || 0).toLocaleString('es-CO')} COP.`,
+      `Dinero liberado por código reclamado: ${Number(summary.released || 0).toLocaleString('es-CO')} COP.`,
       Number(summary.delayed || 0) + Number(summary.cancelled || 0) > 0 ? 'Hay incidencias: ajusta cupos por franja antes de publicar más promociones.' : 'Operación estable: puedes activar cupones o resaltar platos de mayor margen.'
     ]});
   }
@@ -862,20 +1291,93 @@ app.get('/api/admin/coupons', auth(ADMIN_ROLES), (req, res) => {
   res.json(rows.map(serializeCoupon));
 });
 
-app.post('/api/admin/coupons', auth(ADMIN_ROLES), (req, res) => {
-  const codeValue = String(req.body.code || req.body.name || code('CUPON')).trim().toUpperCase();
-  if (!codeValue) return res.status(400).json({ message: 'Escribe ID/nombre del cupón.' });
-  if (restaurantsDb.prepare('SELECT id FROM coupons WHERE code=?').get(codeValue)) return res.status(409).json({ message: 'Ese ID de cupón ya existe.' });
-  const coverageRestaurants = Array.isArray(req.body.coverage_restaurants) ? req.body.coverage_restaurants.map(Number) : [];
-  const restaurantId = req.body.effect_scope === 'restaurant' && coverageRestaurants.length === 1 ? coverageRestaurants[0] : null;
+function buildCouponPayload(req, { restaurantId = null, ownerScope = false } = {}) {
+  const kind = req.body.kind || 'coupon';
+  const isRedeemable = kind === 'coupon' ? 1 : 0;
+  const rawCode = kind === 'coupon' ? (req.body.code || req.body.name) : (req.body.code || code('DTO'));
+  const codeValue = String(rawCode || '').trim().toUpperCase();
+  if (kind === 'coupon' && !codeValue) throw new Error('Un cupón necesita ID/nombre.');
+  const coverageRestaurants = ownerScope ? asArray(req.body.coverage_restaurants).map(Number).filter(Boolean) : [Number(restaurantId)];
+  const effectScope = ownerScope ? (req.body.effect_scope || 'app') : 'restaurant';
+  const finalRestaurant = !ownerScope ? restaurantId : (effectScope === 'restaurant' && coverageRestaurants.length === 1 ? coverageRestaurants[0] : null);
+  const products = asArray(req.body.products).map((x) => Number(x) || x).filter(Boolean);
+  const effectType = req.body.effect_type || (kind === 'coupon' ? 'credit_fixed' : 'discount_percent');
+  const effectValue = moneyInt(req.body.effect_value || req.body.discount_value, 0);
+  return {
+    restaurantId: finalRestaurant,
+    codeValue,
+    name: kind === 'coupon' ? codeValue : visibleBenefitName({ effect_type: effectType, effect_value: effectValue, products_json: jsonString(products), restaurant_id: finalRestaurant, effect_scope: effectScope }),
+    description: req.body.description || '',
+    startsAt: normalizeDateTime(req.body.starts_at) || new Date().toISOString().slice(0,16).replace('T',' '),
+    endsAt: normalizeDateTime(req.body.ends_at || req.body.expires_at),
+    discountType: effectType.includes('percent') ? 'percent' : 'fixed',
+    effectType,
+    effectValue,
+    effectScope,
+    coverageRestaurants,
+    products,
+    minPurchase: moneyInt(req.body.min_purchase, 0),
+    previousPurchases: moneyInt(req.body.previous_purchases_required, 0),
+    maxUses: moneyInt(req.body.max_uses, 100),
+    unlimitedUses: req.body.unlimited_uses ? 1 : 0,
+    autoApply: ownerScope && req.body.auto_apply ? 1 : 0,
+    isRedeemable,
+    isPromotion: req.body.is_promotion === false ? 0 : 1
+  };
+}
+
+function insertCoupon(payload, req) {
+  if (restaurantsDb.prepare('SELECT id FROM coupons WHERE code=?').get(payload.codeValue)) throw new Error('Ese ID de cupón/promoción ya existe.');
   const info = restaurantsDb.prepare(`INSERT INTO coupons (restaurant_id,code,name,description,starts_at,ends_at,discount_type,discount_value,effect_type,effect_value,effect_scope,coverage_restaurants_json,products_json,min_purchase,previous_purchases_required,max_uses,unlimited_uses,auto_apply,is_redeemable,is_promotion,active,created_by,creator_role,creator_user_id,creator_restaurant_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .run(restaurantId, codeValue, req.body.name || codeValue, req.body.description || '', req.body.starts_at || null, req.body.ends_at || req.body.expires_at || null, req.body.discount_type || 'fixed', moneyInt(req.body.effect_value || req.body.discount_value, 0), req.body.effect_type || 'credit_fixed', moneyInt(req.body.effect_value || req.body.discount_value, 0), req.body.effect_scope || 'app', jsonString(coverageRestaurants), jsonString(req.body.products || []), moneyInt(req.body.min_purchase, 0), moneyInt(req.body.previous_purchases_required, 0), moneyInt(req.body.max_uses, 100), req.body.unlimited_uses ? 1 : 0, req.body.auto_apply ? 1 : 0, 1, req.body.is_promotion ? 1 : 0, 1, req.user.username, req.user.role, req.user.id, null);
-  const coupon = restaurantsDb.prepare('SELECT * FROM coupons WHERE id=?').get(info.lastInsertRowid);
-  if (req.body.auto_apply) {
-    const users = req.body.all_users ? usersDb.prepare("SELECT id FROM accounts WHERE role='customer' AND status='active'").all() : asArray(req.body.user_ids).map((id) => ({ id }));
-    for (const u of users) restaurantsDb.prepare('INSERT OR IGNORE INTO coupon_wallet (user_id,coupon_id,restaurant_id,code,effect_scope,credit_balance) VALUES (?,?,?,?,?,?)').run(u.id, coupon.id, restaurantId, coupon.code, coupon.effect_scope, moneyInt(coupon.effect_value, 0));
+    .run(payload.restaurantId, payload.codeValue, payload.name, payload.description, payload.startsAt, payload.endsAt, payload.discountType, payload.effectValue, payload.effectType, payload.effectValue, payload.effectScope, jsonString(payload.coverageRestaurants), jsonString(payload.products), payload.minPurchase, payload.previousPurchases, payload.maxUses, payload.unlimitedUses, payload.autoApply, payload.isRedeemable, payload.isPromotion, 1, req.user.username, req.user.role, req.user.id, req.user.restaurant_id || payload.restaurantId || null);
+  return restaurantsDb.prepare('SELECT * FROM coupons WHERE id=?').get(info.lastInsertRowid);
+}
+
+function updateCoupon(id, req, ownerScope = false) {
+  const current = restaurantsDb.prepare('SELECT * FROM coupons WHERE id=?').get(id);
+  if (!current) return null;
+  const payload = buildCouponPayload(req, { restaurantId: current.restaurant_id, ownerScope });
+  if (payload.codeValue !== current.code && restaurantsDb.prepare('SELECT id FROM coupons WHERE code=? AND id<>?').get(payload.codeValue, id)) throw new Error('Ese ID de cupón/promoción ya existe.');
+  restaurantsDb.prepare(`UPDATE coupons SET restaurant_id=?, code=?, name=?, description=?, starts_at=?, ends_at=?, discount_type=?, discount_value=?, effect_type=?, effect_value=?, effect_scope=?, coverage_restaurants_json=?, products_json=?, min_purchase=?, previous_purchases_required=?, max_uses=?, unlimited_uses=?, auto_apply=?, is_redeemable=?, is_promotion=?, active=?, created_by=created_by WHERE id=?`)
+    .run(payload.restaurantId, payload.codeValue, payload.name, payload.description, payload.startsAt, payload.endsAt, payload.discountType, payload.effectValue, payload.effectType, payload.effectValue, payload.effectScope, jsonString(payload.coverageRestaurants), jsonString(payload.products), payload.minPurchase, payload.previousPurchases, payload.maxUses, payload.unlimitedUses, payload.autoApply, payload.isRedeemable, payload.isPromotion, req.body.active === false ? 0 : 1, id);
+  return restaurantsDb.prepare('SELECT * FROM coupons WHERE id=?').get(id);
+}
+
+app.post('/api/admin/coupons', auth(ADMIN_ROLES), (req, res) => {
+  try {
+    const payload = buildCouponPayload(req, { ownerScope: true });
+    const coupon = insertCoupon(payload, req);
+    if (payload.autoApply) {
+      const users = req.body.all_users ? usersDb.prepare("SELECT id FROM accounts WHERE role='customer' AND status='active'").all() : asArray(req.body.user_ids).map((id) => ({ id }));
+      for (const u of users) {
+        restaurantsDb.prepare('INSERT OR IGNORE INTO coupon_wallet (user_id,coupon_id,restaurant_id,code,effect_scope,credit_balance) VALUES (?,?,?,?,?,?)').run(u.id, coupon.id, coupon.restaurant_id || null, coupon.code, coupon.effect_scope, moneyInt(coupon.effect_value, 0));
+        recordCouponUsage(coupon, u.id, { restaurantId: coupon.restaurant_id || null, usageType: 'asignado automático', amount: moneyInt(coupon.effect_value, 0) });
+      }
+    }
+    res.status(201).json(serializeCoupon(coupon));
+  } catch (err) { res.status(400).json({ message: err.message }); }
+});
+
+app.patch('/api/admin/coupons/:id', auth(ADMIN_ROLES), (req, res) => {
+  try { const coupon = updateCoupon(req.params.id, req, true); if (!coupon) return res.status(404).json({ message: 'Cupón o descuento no encontrado.' }); res.json(serializeCoupon(coupon)); }
+  catch (err) { res.status(400).json({ message: err.message }); }
+});
+
+app.delete('/api/admin/coupons/:id', auth(ADMIN_ROLES), (req, res) => {
+  restaurantsDb.prepare('UPDATE coupons SET active=0 WHERE id=?').run(req.params.id);
+  res.json({ ok: true, message: 'Cupón o descuento eliminado/inactivado.' });
+});
+
+app.get('/api/coupons/:id/usages', auth(), (req, res) => {
+  const coupon = restaurantsDb.prepare('SELECT * FROM coupons WHERE id=?').get(req.params.id);
+  if (!coupon) return res.status(404).json({ message: 'Cupón no encontrado.' });
+  if (!ADMIN_ROLES.includes(req.user.role) && req.user.role !== 'owner') {
+    const rid = getRestaurantId(req);
+    if (Number(coupon.restaurant_id) !== Number(rid)) return res.status(403).json({ message: 'No puedes ver usos de beneficios de otro restaurante.' });
   }
-  res.status(201).json(serializeCoupon(coupon));
+  const rows = restaurantsDb.prepare('SELECT * FROM coupon_usages WHERE coupon_id=? ORDER BY created_at DESC').all(req.params.id)
+    .map((u) => ({ ...u, user: usersDb.prepare('SELECT username,full_name,email FROM accounts WHERE id=?').get(u.user_id), restaurant_name: u.restaurant_id ? restaurantsDb.prepare('SELECT name FROM restaurants WHERE id=?').get(u.restaurant_id)?.name : 'Toda la app' }));
+  res.json({ total: rows.length, usages: rows });
 });
 
 app.post('/api/customer/coupons/redeem', auth(['customer','owner']), (req, res) => {
@@ -886,7 +1388,9 @@ app.post('/api/customer/coupons/redeem', auth(['customer','owner']), (req, res) 
   if (coupon.effect_type !== 'credit_fixed') return res.status(400).json({ message: 'Este beneficio se aplica automáticamente en factura; no necesita redención.' });
   restaurantsDb.prepare('INSERT OR IGNORE INTO coupon_wallet (user_id,coupon_id,restaurant_id,code,effect_scope,credit_balance) VALUES (?,?,?,?,?,?)').run(req.user.id, coupon.id, coupon.restaurant_id || null, coupon.code, coupon.effect_scope, moneyInt(coupon.effect_value || coupon.discount_value, 0));
   restaurantsDb.prepare('UPDATE coupons SET current_uses=current_uses+1 WHERE id=?').run(coupon.id);
-  res.json({ message: 'Cupón redimido. El crédito quedó disponible para tu próxima compra.', coupon: serializeCoupon(coupon) });
+  if (coupon.effect_scope === 'app') usersDb.prepare('UPDATE accounts SET wallet_balance=wallet_balance+? WHERE id=?').run(moneyInt(coupon.effect_value || coupon.discount_value, 0), req.user.id);
+  recordCouponUsage(coupon, req.user.id, { restaurantId: coupon.restaurant_id || null, usageType: 'redimido', amount: moneyInt(coupon.effect_value || coupon.discount_value, 0) });
+  res.json({ message: 'Cupón redimido. El crédito quedó disponible en Mi cuenta para tu próxima compra.', coupon: serializeCoupon(coupon) });
 });
 
 
@@ -913,30 +1417,645 @@ app.post('/api/restaurant/upload', auth(RESTAURANT_ROLES), restaurantGuard, uplo
   res.status(201).json({ url: `/uploads/quicklunch/${req.file.filename}`, filename: req.file.filename });
 });
 
-app.get('/api/images/suggest', auth(RESTAURANT_ROLES), async (req, res) => {
-  const query = String(req.query.q || 'almuerzo colombiano').trim();
-  const description = String(req.query.description || '').trim();
-  const search = `${query} ${description} comida plato restaurante`;
-  const results = [];
+
+
+
+const CORRIENTAZO_IMAGE_PROFILES = [
+  // Proteínas principales
+  { id:'tilapia', category:'protein', label:'Tilapia frita', keys:['tilapia','filete de tilapia'], aliases:['tilapia frita','pescado tilapia','fried tilapia'], terms:['tilapia frita plato colombiano','tilapia frita servida con arroz ensalada','filete de tilapia frito comida colombiana','pescado tilapia frito plato restaurante'], tags:['tilapia','fried fish','fish plate','seafood dish','colombian food'] },
+  { id:'mojarra', category:'protein', label:'Mojarra frita', keys:['mojarra'], aliases:['mojarra frita','pescado frito','fried fish'], terms:['mojarra frita plato colombiano','pescado frito entero con arroz patacon','mojarra frita restaurante colombiano','fried whole fish plate'], tags:['fried fish','whole fish','fish plate','seafood','colombian food'] },
+  { id:'fish', category:'protein', label:'Pescado', keys:['pescado','trucha','filete de pescado'], aliases:['pescado frito','pescado a la plancha','fish dish'], terms:['pescado frito servido en plato','pescado a la plancha con arroz','filete de pescado plato restaurante','fish fillet plate food'], tags:['fish fillet','fried fish','fish plate','seafood','restaurant dish'] },
+  { id:'chuleta-cerdo', category:'protein', label:'Chuleta de cerdo', keys:['chuleta de cerdo','cerdo apanado','chuleta cerdo'], aliases:['chuleta de cerdo apanada','pork cutlet','breaded pork'], terms:['chuleta de cerdo apanada plato colombiano','chuleta de cerdo con arroz ensalada','pork cutlet plate food','breaded pork chop restaurant plate'], tags:['pork cutlet','breaded pork','pork chop','fried pork','lunch plate'] },
+  { id:'chuleta-res', category:'protein', label:'Chuleta de res', keys:['chuleta de res','res apanada','carne apanada'], aliases:['chuleta de res apanada','beef cutlet','breaded beef'], terms:['chuleta de res apanada plato','carne apanada con arroz ensalada','beef cutlet plate food','breaded beef steak plate'], tags:['beef cutlet','breaded beef','steak plate','fried beef','lunch plate'] },
+  { id:'costilla', category:'protein', label:'Costilla BBQ', keys:['costilla','costilla bbq','costillas','bbq'], aliases:['costilla bbq','costillas de cerdo','pork ribs'], terms:['costilla bbq servida en plato','costillas bbq con arroz','pork ribs plate food','costilla de cerdo restaurante'], tags:['pork ribs','bbq ribs','ribs plate','grilled ribs','restaurant food'] },
+  { id:'pollo', category:'protein', label:'Pollo', keys:['pollo','pechuga','muslo','contramuslo','gallina'], aliases:['pollo asado','pollo guisado','pollo apanado','pechuga de pollo'], terms:['pollo servido en plato con arroz','pechuga de pollo a la plancha plato','pollo guisado almuerzo colombiano','pollo apanado plato restaurante'], tags:['chicken plate','grilled chicken','fried chicken','chicken rice','restaurant meal'] },
+  { id:'carne-res', category:'protein', label:'Carne de res', keys:['carne de res','res','bistec','lomo','carne asada','sobrebarriga','carne sudada','carne molida'], aliases:['bistec de res','carne asada','carne sudada','beef plate'], terms:['carne de res servida en plato colombiano','bistec con arroz y ensalada','carne sudada plato colombiano','beef steak lunch plate'], tags:['beef steak','beef plate','grilled beef','lunch plate','restaurant food'] },
+  { id:'chicharron', category:'protein', label:'Chicharrón', keys:['chicharron','chicharrón','tocineta'], aliases:['chicharrón colombiano','pork belly'], terms:['chicharron colombiano plato','chicharrón con arroz frijoles','crispy pork belly plate','pork belly colombian food'], tags:['chicharron','pork belly','crispy pork','colombian food','lunch plate'] },
+  { id:'albondigas', category:'protein', label:'Albóndigas', keys:['albondiga','albóndiga','albondigas','albóndigas'], aliases:['albóndigas en salsa','meatballs'], terms:['albondigas en salsa plato','albóndigas con arroz almuerzo','meatballs sauce plate food','albondigas comida casera'], tags:['meatballs','meatballs sauce','lunch plate','homemade food','rice plate'] },
+  { id:'huevo', category:'protein', label:'Huevo', keys:['huevo','huevos','tortilla'], aliases:['huevo frito','tortilla de huevo'], terms:['huevo frito servido en plato','huevo con arroz comida casera','fried egg plate food','tortilla de huevo plato'], tags:['fried egg','egg plate','omelette','breakfast plate','food'] },
+
+  // Principios y granos
+  { id:'frijoles', category:'principle', label:'Fríjoles', keys:['frijol','frijoles','fríjol','fríjoles'], aliases:['frijoles colombianos','beans stew'], terms:['frijoles colombianos servidos en plato','frijoles con arroz plato colombiano','bean stew bowl food','frijoles caseros almuerzo'], tags:['beans','bean stew','frijoles','rice beans','colombian food'] },
+  { id:'lentejas', category:'principle', label:'Lentejas', keys:['lenteja','lentejas'], aliases:['lentejas caseras','lentils stew'], terms:['lentejas caseras servidas en plato','lentejas con arroz almuerzo','lentil stew bowl food','sopa de lentejas plato'], tags:['lentils','lentil stew','lentil soup','bowl food','homemade food'] },
+  { id:'garbanzos', category:'principle', label:'Garbanzos', keys:['garbanzo','garbanzos'], aliases:['garbanzos guisados','chickpeas'], terms:['garbanzos guisados plato','garbanzos con arroz comida casera','chickpea stew bowl food','garbanzos restaurante'], tags:['chickpeas','chickpea stew','garbanzos','bowl food','homemade food'] },
+  { id:'arvejas', category:'principle', label:'Arvejas', keys:['arveja','arvejas'], aliases:['arvejas guisadas','peas stew'], terms:['arvejas guisadas plato','arvejas con arroz comida casera','peas stew food bowl','arvejas colombianas'], tags:['peas','pea stew','arvejas','bowl food','homemade food'] },
+  { id:'pasta', category:'principle', label:'Pasta', keys:['pasta','espagueti','spaghetti','macarron','macarrón','fideos'], aliases:['espagueti','pasta corta','macarrones'], terms:['pasta servida en plato','espagueti plato restaurante','pasta como principio almuerzo','macarrones comida casera'], tags:['pasta plate','spaghetti','macaroni','noodles','restaurant dish'] },
+  { id:'arroz', category:'side', label:'Arroz', keys:['arroz','arroz blanco','arroz con coco','arroz amarillo'], aliases:['arroz blanco','rice side dish'], terms:['arroz blanco servido en plato','arroz acompañamiento almuerzo colombiano','white rice side dish','arroz con comida casera'], tags:['white rice','rice plate','rice side','lunch plate','food'] },
+
+  // Acompañamientos
+  { id:'ensalada', category:'side', label:'Ensalada', keys:['ensalada','lechuga','repollo','verdura','vegetales'], aliases:['ensalada fresca','green salad'], terms:['ensalada fresca servida en plato','ensalada acompañamiento almuerzo','ensalada de repollo colombiana','green salad side dish'], tags:['salad','green salad','side salad','vegetable salad','lunch plate'] },
+  { id:'papa-cocida', category:'side', label:'Papa cocida', keys:['papa cocida','papa salada','papa sudada','papa chorriada'], aliases:['papa cocida','papa salada'], terms:['papa cocida servida en plato','papa salada acompañamiento colombiano','boiled potatoes side dish','papa sudada comida colombiana'], tags:['boiled potatoes','potatoes side','papa','side dish','lunch plate'] },
+  { id:'papa-frita', category:'side', label:'Papas fritas', keys:['papa frita','papas fritas','french fries'], aliases:['papas fritas','french fries'], terms:['papas fritas servidas en plato','papas fritas acompañamiento restaurante','french fries plate food','fried potatoes side dish'], tags:['french fries','fried potatoes','fries plate','side dish','food'] },
+  { id:'patacon', category:'side', label:'Patacón', keys:['patacon','patacón','toston','tostón'], aliases:['patacones','tostones'], terms:['patacon frito plato colombiano','patacones como acompañamiento','tostones fried plantain plate','patacon con comida colombiana'], tags:['patacones','tostones','fried plantain','plantain plate','colombian food'] },
+  { id:'maduro', category:'side', label:'Plátano maduro', keys:['maduro','platano maduro','plátano maduro','tajada','tajadas'], aliases:['tajadas de maduro','fried sweet plantain'], terms:['tajadas de maduro plato colombiano','platano maduro frito acompañamiento','fried sweet plantain plate','maduro con almuerzo colombiano'], tags:['sweet plantain','fried plantain','plantain side','colombian food','lunch plate'] },
+  { id:'yuca', category:'side', label:'Yuca', keys:['yuca','yucca','cassava'], aliases:['yuca frita','yuca cocida'], terms:['yuca frita servida en plato','yuca cocida acompañamiento colombiano','cassava side dish plate','yuca con almuerzo colombiano'], tags:['cassava','yuca','yucca fries','side dish','colombian food'] },
+  { id:'arepa', category:'side', label:'Arepa', keys:['arepa','arepas'], aliases:['arepa colombiana'], terms:['arepa colombiana servida en plato','arepa acompañamiento comida colombiana','corn arepa plate food','arepa restaurante'], tags:['arepa','corn cake','colombian food','side dish','plate'] },
+  { id:'aguacate', category:'side', label:'Aguacate', keys:['aguacate','avocado'], aliases:['aguacate en tajadas'], terms:['aguacate servido en plato','tajadas de aguacate acompañamiento','avocado slices plate food','aguacate almuerzo colombiano'], tags:['avocado','avocado slices','side dish','plate food','lunch'] },
+
+  // Sopas
+  { id:'sopa-arroz', category:'soup', label:'Sopa de arroz', keys:['sopa de arroz','arroz sopa'], aliases:['sopa de arroz casera'], terms:['sopa de arroz casera plato hondo','sopa de arroz colombiana','rice soup bowl food','sopa casera de arroz'], tags:['rice soup','soup bowl','homemade soup','colombian soup','food'] },
+  { id:'sopa-pasta', category:'soup', label:'Sopa de pasta', keys:['sopa de pasta','sopa de fideos','fideos sopa'], aliases:['sopa de fideos'], terms:['sopa de pasta plato hondo','sopa de fideos casera','noodle soup bowl food','sopa casera con fideos'], tags:['noodle soup','soup bowl','pasta soup','homemade soup','food'] },
+  { id:'sopa-verduras', category:'soup', label:'Sopa de verduras', keys:['sopa de verduras','verduras sopa','sopa de vegetales'], aliases:['sopa de verduras casera'], terms:['sopa de verduras plato hondo','sopa de vegetales casera','vegetable soup bowl food','sopa casera de verduras'], tags:['vegetable soup','soup bowl','homemade soup','vegetables','food'] },
+  { id:'sancocho', category:'soup', label:'Sancocho', keys:['sancocho'], aliases:['sancocho colombiano'], terms:['sancocho colombiano plato hondo','sancocho de pollo colombiano','sancocho comida colombiana','colombian sancocho soup'], tags:['sancocho','colombian soup','soup bowl','latin food','food'] },
+  { id:'mondongo', category:'soup', label:'Mondongo', keys:['mondongo'], aliases:['sopa de mondongo'], terms:['mondongo colombiano plato hondo','sopa de mondongo colombiana','mondongo soup bowl','sopa colombiana mondongo'], tags:['mondongo','tripe soup','soup bowl','colombian food','latin food'] },
+  { id:'ajiaco', category:'soup', label:'Ajiaco', keys:['ajiaco'], aliases:['ajiaco colombiano'], terms:['ajiaco colombiano plato hondo','ajiaco santafereño sopa colombiana','ajiaco soup bowl','sopa ajiaco colombiana'], tags:['ajiaco','colombian soup','soup bowl','latin food','food'] },
+  { id:'sopa-general', category:'soup', label:'Sopa', keys:['sopa','caldo','crema','consome','consomé'], aliases:['sopa casera','caldo'], terms:['sopa casera plato hondo','caldo colombiano plato hondo','homemade soup bowl food','soup bowl restaurant'], tags:['soup bowl','homemade soup','caldo','restaurant soup','food'] },
+
+  // Bebidas e industriales
+  { id:'jugo-mora', category:'drink', label:'Jugo de mora', keys:['jugo de mora','mora'], aliases:['jugo de mora','blackberry juice'], terms:['jugo de mora en vaso','bebida de mora restaurante','blackberry juice glass','jugo natural de mora'], tags:['blackberry juice','fruit juice','juice glass','drink','mora'] },
+  { id:'jugo-pina', category:'drink', label:'Jugo de piña', keys:['jugo de pina','jugo de piña','piña','pina'], aliases:['jugo de piña','pineapple juice'], terms:['jugo de piña en vaso','bebida de piña restaurante','pineapple juice glass','jugo natural de piña'], tags:['pineapple juice','fruit juice','juice glass','drink','pineapple'] },
+  { id:'jugo-guayaba', category:'drink', label:'Jugo de guayaba', keys:['jugo de guayaba','guayaba'], aliases:['jugo de guayaba','guava juice'], terms:['jugo de guayaba en vaso','bebida de guayaba restaurante','guava juice glass','jugo natural de guayaba'], tags:['guava juice','fruit juice','juice glass','drink','guava'] },
+  { id:'jugo-lulo', category:'drink', label:'Jugo de lulo', keys:['jugo de lulo','lulo'], aliases:['jugo de lulo','lulo juice'], terms:['jugo de lulo en vaso','bebida de lulo colombiana','lulo juice glass','jugo natural de lulo'], tags:['lulo juice','fruit juice','juice glass','drink','colombian drink'] },
+  { id:'limonada', category:'drink', label:'Limonada', keys:['limonada','limon','limón'], aliases:['limonada natural','lemonade'], terms:['limonada natural en vaso','lemonade glass drink','bebida limonada restaurante','limonada colombiana'], tags:['lemonade','lemon drink','juice glass','drink','restaurant'] },
+  { id:'gaseosa', category:'industrial', label:'Gaseosa', keys:['gaseosa','soda','coca cola','coca-cola','pepsi','postobon','postobón','colombiana','manzana postobon','sprite','quatro'], aliases:['gaseosa botella','soda bottle'], terms:['gaseosa colombiana botella','Postobon gaseosa botella','Coca Cola botella Colombia','bebida gaseosa producto supermercado'], tags:['soda bottle','soft drink','coca cola','postobon','drink'] },
+  { id:'agua', category:'industrial', label:'Agua', keys:['agua','agua botella','botella de agua'], aliases:['agua embotellada'], terms:['agua embotellada producto','botella de agua supermercado','water bottle product','agua botella'], tags:['water bottle','bottled water','drink product','agua','supermarket'] },
+  { id:'snack', category:'industrial', label:'Snack', keys:['snack','papas paquete','paquete','galleta','chitos','doritos','mecato'], aliases:['snack empacado'], terms:['snack empacado producto supermercado','papas paquete producto Colombia','galletas paquete producto','mecato colombiano paquete'], tags:['snack bag','packaged snack','chips bag','supermarket product','snack'] },
+  { id:'postre-industrial', category:'industrial', label:'Postre industrial', keys:['postre','gelatina','flan','yogurt','yogur','alpina'], aliases:['postre empacado'], terms:['postre empacado supermercado','gelatina producto supermercado','yogurt Alpina producto','flan empacado producto'], tags:['dessert cup','gelatin dessert','yogurt cup','packaged dessert','supermarket'] },
+
+  // Platos armados y genéricos
+  { id:'hamburguesa', category:'complete_plate', label:'Hamburguesa', keys:['hamburguesa','burger','combo hamburguesa'], aliases:['hamburguesa con papas'], terms:['hamburguesa con papas plato restaurante','combo hamburguesa restaurante','burger meal fries','hamburger plate food'], tags:['hamburger','burger meal','fries burger','restaurant burger','food'] },
+  { id:'corrientazo', category:'complete_plate', label:'Corrientazo', keys:['corrientazo','almuerzo completo','plato del dia','plato del día','bandeja'], aliases:['almuerzo colombiano','plato del día'], terms:['corrientazo colombiano plato completo','almuerzo colombiano arroz ensalada carne','plato del dia colombiano restaurante','bandeja almuerzo casero colombiano'], tags:['colombian lunch','lunch plate','rice meat salad','latin food','restaurant meal'] },
+  { id:'default', category:'general', label:'Plato QuickLunch', keys:[], aliases:['plato de comida','almuerzo'], terms:['plato de comida servido restaurante','almuerzo casero servido en plato','restaurant lunch plate food','homemade lunch plate'], tags:['lunch plate','restaurant dish','homemade meal','food plate','latin food'] }
+];
+
+const INDUSTRIAL_DOMAINS = [
+  'exito.com','carulla.com','jumbo.com.co','olimpica.com','tiendasd1.com','alkosto.com','makro.com.co','pricesmart.com.co','farmatodo.com.co','merqueo.com','rappi.com.co','mercadolibre.com.co',
+  'nutresa.com','postobon.com','coca-cola.com','coca-cola.com.co','alpina.com','pepsico.com','pepsico.com.co','colombina.com','bavaria.co','qualacolombia.com','teamfoods.com',
+  'nestle.com.co','unileverfoodsolutions.com.co','dislicores.com','mercacentro.com.co','laika.com.co','tostao.com','ara.com.co','isimo.co','megatiendas.co','superinter.com.co',
+  'supermercadoscolsubsidio.com','plazavea.com.co','frisby.com.co','klisto.com.co','makro.com','metro.com.co'
+];
+const FOOD_RECIPE_DOMAINS = IMAGE_SEARCH_DOMAINS.filter((d) => !INDUSTRIAL_DOMAINS.includes(d));
+
+const INDUSTRIAL_PRODUCT_HINTS = [
+  // Palabras de empaque/presentación: estas sí indican producto de supermercado.
+  'gaseosa','soda','botella','lata','paquete','producto','industrial','empacado','empaque','snack','mecato','papas paquete','paquete familiar','six pack','pack','ml','litro','litros','presentacion','presentación','unidad','bolsa','caja','vaso','tetrapak','tetra pak','sixpack',
+  // Marcas y productos comunes en corrientazos/tiendas.
+  'papas margarita','margarita','doritos','cheetos','chitos','todito','de todito','detodito','galleta','galletas','oreo','ducales','saltin','festival','chocolate','jet','chocoramo','nucita','pony malta','maltin polar','mr tea','fuze tea','gatorade','speed max','vive 100','red bull',
+  'coca cola','coca-cola','coke','pepsi','sprite','quatro','colombiana','postobon','postobón','manzana postobon','manzana postobón','uva postobon','kola roman','seven up','7up',
+  'agua cristal','agua brisa','agua manantial','agua botella','agua embotellada','cristal botella','brisa botella',
+  'hit','del valle','frutto','tutti frutti','cifrut','jugos hit','jugo hit','néctar','nectar','caja de jugo','jugo en caja','bebida hit',
+  'yogurt','yogur','alpina','alpinette','bonyurt','bon yurt','kumis','avena alpina','gelatina','flan','postre empacado','yogo yogo','regeneris','finesse','alpin'
+];
+
+function isIndustrialProductSearch(query = '', description = '') {
+  const text = normalizeFoodText(`${query} ${description}`);
+  return INDUSTRIAL_PRODUCT_HINTS.some((hint) => text.includes(normalizeFoodText(hint)));
+}
+
+function productExactTokens(query = '', description = '') {
+  const text = normalizeFoodText(`${query} ${description}`);
+  const raw = text.split(' ').filter((w) => w.length > 2 && !GENERIC_IMAGE_WORDS.has(w));
+  const brandCombos = [
+    'coca cola','coca-cola','manzana postobon','manzana postobón','pony malta','mr tea','fuze tea','agua cristal','agua brisa','papas margarita','de todito','jugo hit','jugos hit','del valle','bon yurt','bonyurt','avena alpina','chocolate jet'
+  ].filter((combo) => text.includes(normalizeFoodText(combo))).flatMap((combo) => normalizeFoodText(combo).split(' '));
+  return [...new Set([...raw, ...brandCombos].filter(Boolean))].slice(0, 10);
+}
+
+function profileScoreForText(profile, text) {
+  const normalized = normalizeFoodText(text);
+  let score = 0;
+  for (const key of profile.keys || []) {
+    const k = normalizeFoodText(key);
+    if (!k) continue;
+    if (normalized.includes(k)) score += 100 + k.length;
+  }
+  for (const alias of profile.aliases || []) {
+    const a = normalizeFoodText(alias);
+    if (a && normalized.includes(a)) score += 50 + a.length;
+  }
+  const tokens = normalized.split(' ').filter((w) => w.length > 2);
+  for (const key of profile.keys || []) {
+    for (const t of normalizeFoodText(key).split(' ').filter((w) => w.length > 2)) {
+      if (tokens.includes(t)) score += 12;
+    }
+  }
+  return score;
+}
+
+function detectRealFoodProfile(query = '', description = '') {
+  const text = `${query} ${description}`;
+  const ranked = CORRIENTAZO_IMAGE_PROFILES
+    .filter((p) => p.id !== 'default')
+    .map((profile) => ({ profile, score: profileScoreForText(profile, text) }))
+    .sort((a, b) => b.score - a.score);
+  return ranked[0]?.score > 0 ? ranked[0].profile : CORRIENTAZO_IMAGE_PROFILES.find((p) => p.id === 'default');
+}
+
+function profileDomainList(profile, query = '', description = '') {
+  if (isIndustrialProductSearch(query, description) || profile?.category === 'industrial') {
+    // Para productos empacados se consulta primero supermercado/marca, porque las recetas suelen devolver platos similares pero no el producto real.
+    return [...new Set([...INDUSTRIAL_DOMAINS, ...FOOD_RECIPE_DOMAINS])];
+  }
+  if (profile?.category === 'drink') {
+    // Jugos naturales y limonadas deben verse como bebidas reales; supermercados solo quedan como respaldo.
+    return [...new Set([...FOOD_RECIPE_DOMAINS, ...INDUSTRIAL_DOMAINS])];
+  }
+  return [...new Set([...FOOD_RECIPE_DOMAINS, ...INDUSTRIAL_DOMAINS])];
+}
+
+function corrientazoContextVariants(profile = {}, query = '', description = '') {
+  const rawName = String(query || '').trim();
+  const label = profile.label || rawName || 'plato';
+  const base = rawName || label;
+  const cat = profile.category || 'general';
+  const variants = [];
+
+  if (cat === 'protein') {
+    variants.push(`${base} almuerzo ejecutivo colombiano`, `${base} corrientazo con arroz y ensalada`, `${base} plato servido restaurante`, `${label} comida casera colombiana`);
+  } else if (cat === 'principle') {
+    variants.push(`${base} principio de corrientazo colombiano`, `${base} servido con arroz almuerzo`, `${label} casero plato hondo`, `${base} guiso colombiano`);
+  } else if (cat === 'side') {
+    variants.push(`${base} acompañamiento de almuerzo colombiano`, `${base} servido en plato`, `${label} porción restaurante`, `${base} comida colombiana acompañamiento`);
+  } else if (cat === 'soup') {
+    variants.push(`${base} sopa casera plato hondo`, `${base} sopa colombiana restaurante`, `${label} caldo servido`, `${base} almuerzo colombiano sopa`);
+  } else if (cat === 'drink') {
+    variants.push(`${base} jugo natural en vaso`, `${base} bebida natural restaurante`, `${label} vaso frio`, `${base} jugo colombiano`);
+  } else if (cat === 'complete_plate') {
+    variants.push(`${base} plato completo restaurante`, `${base} almuerzo colombiano`, `${label} servido con acompañamientos`, `${base} comida real`);
+  } else {
+    variants.push(`${base} plato de comida real`, `${base} restaurante foto`, `${base} almuerzo servido`, `${label} comida colombiana`);
+  }
+
+  return variants;
+}
+
+function realFoodTerms(query = '', description = '') {
+  const profile = detectRealFoodProfile(query, description);
+  const rawName = String(query || '').trim();
+  const rawDescription = String(description || '').trim();
+  const negative = '-logo -icono -vector -dibujo -clipart -caricatura -emoji -banner -plantilla -menu -menú -pdf -mapa';
+  const terms = [];
+  const industrial = isIndustrialProductSearch(query, description) || profile?.category === 'industrial';
+
+  if (industrial) {
+    const presentation = extractPresentationText(`${query} ${description}`);
+    const brandQuery = productBrandAwareQuery(query, description);
+    if (brandQuery && presentation) terms.push(`${brandQuery} ${presentation} producto original foto ${negative}`);
+    if (rawName) terms.push(`${rawName} producto original empaque foto ${negative}`);
+    if (rawName) terms.push(`${rawName} supermercado Colombia producto ${negative}`);
+    if (rawName) terms.push(`${rawName} botella lata paquete empaque ${negative}`);
+    if (rawName) terms.push(`${rawName} tienda online Colombia imagen producto ${negative}`);
+    for (const term of profile.terms || []) terms.push(`${term} producto empaque supermercado ${negative}`);
+    for (const alias of profile.aliases || []) terms.push(`${alias} producto real empaque ${negative}`);
+  } else {
+    if (rawName && rawDescription) terms.push(`${rawName} ${rawDescription} foto real ${negative}`);
+    if (rawName) terms.push(`${rawName} plato real restaurante ${negative}`);
+    if (rawName) terms.push(`${rawName} almuerzo colombiano corrientazo ${negative}`);
+    corrientazoContextVariants(profile, query, description).forEach((term) => terms.push(`${term} ${negative}`));
+    for (const term of profile.terms || []) terms.push(`${term} ${negative}`);
+    for (const alias of profile.aliases || []) terms.push(`${alias} foto real plato ${negative}`);
+  }
+  return [...new Set(terms.map(x => x.replace(/\s+/g, ' ').trim()).filter(Boolean))].slice(0, 18);
+}
+
+function realFoodLabel(query = '', profile = {}) {
+  const clean = String(query || '').trim();
+  return clean || profile.label || 'Plato QuickLunch';
+}
+
+function relevanceTokens(query = '', description = '', profile = detectRealFoodProfile(query, description)) {
+  const direct = normalizeFoodText(`${query} ${description}`).split(' ')
+    .filter((word) => word.length > 2 && !GENERIC_IMAGE_WORDS.has(word));
+  const profileTokens = [profile.label, ...(profile.keys || []), ...(profile.aliases || [])]
+    .join(' ')
+    .split(' ')
+    .map(normalizeFoodText)
+    .filter((word) => word.length > 2 && !GENERIC_IMAGE_WORDS.has(word));
+  return [...new Set([...direct, ...profileTokens])].slice(0, 14);
+}
+
+function candidateAlreadyUsed(list, url = '', thumbnail = '') {
+  const normalizedUrl = String(url || '').split('?')[0].toLowerCase();
+  const normalizedThumb = String(thumbnail || '').split('?')[0].toLowerCase();
+  return list.some(item => {
+    const u = String(item.url || '').split('?')[0].toLowerCase();
+    const t = String(item.thumbnail || '').split('?')[0].toLowerCase();
+    return (normalizedUrl && (u === normalizedUrl || t === normalizedUrl)) || (normalizedThumb && (u === normalizedThumb || t === normalizedThumb));
+  });
+}
+
+function candidateMatchesSearch(item = {}, query = '', description = '') {
+  const profile = detectRealFoodProfile(query, description);
+  const haystack = normalizeFoodText(`${item.label || ''} ${item.context || ''} ${item.source || ''} ${item.url || ''}`);
+  const tokens = relevanceTokens(query, description, profile);
+  if (!tokens.length) return true;
+  const hits = tokens.filter((token) => haystack.includes(token)).length;
+  if (hits > 0) return true;
+  // Para productos industriales, algunas tiendas no ponen el nombre en el thumbnail. Se permite si viene de dominio de producto y la búsqueda era industrial.
+  if ((profile.category === 'industrial' || profile.category === 'drink') && /exito|carulla|jumbo|olimpica|d1|alkosto|makro|pricesmart|farmatodo|merqueo|rappi|mercadolibre|nutresa|postobon|coca-cola|alpina/i.test(haystack)) return true;
+  return false;
+}
+
+function addRealPhotoCandidate(list, item, query = '', description = '') {
+  if (!item?.url || !isProbablyImageUrl(item.url)) return;
+  const bad = normalizeFoodText(`${item.label || ''} ${item.context || ''} ${item.source || ''} ${item.url || ''}`);
+  if (/(logo|icon|vector|svg|clipart|cartoon|drawing|emoji|placeholder|pattern|template|banner|mapa|pdf|menu|menú)/i.test(bad)) return;
+  if (!candidateMatchesSearch(item, query, description)) return;
+  if (candidateAlreadyUsed(list, item.url, item.thumbnail)) return;
+  list.push({
+    label: item.label || realFoodLabel(query, detectRealFoodProfile(query, description)),
+    url: item.url,
+    thumbnail: item.thumbnail || item.url,
+    source: item.source || 'Foto real sugerida',
+    context: item.context || 'Imagen fotográfica relacionada con el producto',
+    attribution: item.attribution || ''
+  });
+}
+
+async function fetchJsonSafe(url, options = {}) {
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), options.timeout || 5000);
   try {
-    const url = `https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch=${encodeURIComponent(search)}&gsrnamespace=6&gsrlimit=12&prop=imageinfo&iiprop=url|mime&iiurlwidth=640&format=json&origin=*`;
-    const response = await fetch(url, { headers: { 'User-Agent': 'QuickLunchDemo/1.0' } });
-    const data = await response.json();
-    const pages = Object.values(data.query?.pages || {});
-    for (const page of pages) {
-      const info = page.imageinfo?.[0];
-      const imageUrl = info?.thumburl || info?.url;
-      if (imageUrl && /^image\//.test(info.mime || 'image/')) results.push({ label: page.title.replace(/^File:/, ''), url: imageUrl, source: 'Wikimedia Commons' });
-      if (results.length >= 5) break;
+    const response = await fetch(url, { signal: controller.signal, headers: { 'User-Agent': 'QuickLunchDemo/1.0 image search' } });
+    if (!response.ok) return null;
+    return await response.json();
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+function extractPresentationText(text = '') {
+  const normalized = String(text || '').toLowerCase();
+  const matches = normalized.match(/\b\d+(?:[.,]\d+)?\s?(?:ml|mililitros|l|lt|litro|litros|g|gr|gramos|kg|kilo|oz)\b|\b(?:botella|lata|paquete|bolsa|caja|vaso|tetra\s?pak|six\s?pack|unidad|personal|familiar)\b/gi) || [];
+  return [...new Set(matches.map((x) => x.replace(/\s+/g, ' ').trim()))].slice(0, 5).join(' ');
+}
+
+function productBrandAwareQuery(query = '', description = '') {
+  const text = normalizeFoodText(`${query} ${description}`);
+  const combos = [
+    'coca cola','coca-cola','pepsi','sprite','quatro','colombiana','postobon','postobón','pony malta','mr tea','fuze tea','gatorade','hit','del valle','agua cristal','agua brisa','papas margarita','doritos','cheetos','chitos','de todito','detodito','oreo','festival','ducales','saltin','jet','chocoramo','alpina','alpinette','bonyurt','bon yurt','kumis','avena alpina','yogo yogo'
+  ];
+  const found = combos.find((combo) => text.includes(normalizeFoodText(combo)));
+  if (found) return found;
+  return String(query || '').trim();
+}
+
+function openFoodFactsQueries(query = '', description = '') {
+  const raw = String(query || '').trim();
+  const brandAware = productBrandAwareQuery(query, description);
+  const presentation = extractPresentationText(`${query} ${description}`);
+  const tokens = productExactTokens(query, description).filter((t) => t.length > 2).slice(0, 6).join(' ');
+  return [...new Set([
+    raw,
+    brandAware && presentation ? `${brandAware} ${presentation}` : '',
+    brandAware,
+    tokens,
+    raw ? `${raw} colombia` : '',
+    brandAware ? `${brandAware} producto` : ''
+  ].map((x) => String(x || '').replace(/\s+/g, ' ').trim()).filter((x) => x.length > 1))].slice(0, 6);
+}
+
+function openFoodFactsScore(product = {}, query = '', description = '') {
+  const haystack = normalizeFoodText(`${product.product_name || ''} ${product.brands || ''} ${product.generic_name || ''} ${product.quantity || ''} ${product.categories || ''} ${product.stores || ''} ${product.countries || ''}`);
+  const exact = productExactTokens(query, description);
+  let score = 0;
+  for (const token of exact) if (haystack.includes(token)) score += 35;
+  const brand = normalizeFoodText(productBrandAwareQuery(query, description));
+  if (brand && haystack.includes(brand)) score += 80;
+  const presentation = normalizeFoodText(extractPresentationText(`${query} ${description}`));
+  if (presentation && haystack.includes(presentation)) score += 25;
+  if (/colombia|colombie|co\b/.test(haystack)) score += 8;
+  if (/beverage|drink|snack|chips|soda|water|yogurt|galleta|bebida|gaseosa|botella|lata|paquete/.test(haystack)) score += 15;
+  return score;
+}
+
+async function fetchOpenFoodFactsCandidates(query = '', description = '') {
+  if (!isIndustrialProductSearch(query, description)) return [];
+  const candidates = [];
+  const queries = openFoodFactsQueries(query, description);
+  const fields = 'product_name,brands,generic_name,quantity,categories,stores,countries,image_url,image_front_url,image_small_url,image_front_small_url,image_thumb_url';
+  for (const q of queries) {
+    const params = new URLSearchParams({ search_terms: q, search_simple: '1', action: 'process', json: '1', page_size: '20', fields });
+    const urls = [
+      `https://world.openfoodfacts.org/cgi/search.pl?${params.toString()}`,
+      `https://co.openfoodfacts.org/cgi/search.pl?${params.toString()}`
+    ];
+    for (const url of urls) {
+      const json = await fetchJsonSafe(url, { timeout: 6500 });
+      const products = Array.isArray(json?.products) ? json.products : [];
+      products
+        .map((product) => ({ product, score: openFoodFactsScore(product, query, description) }))
+        .filter(({ product, score }) => score >= 25 && (product.image_front_url || product.image_url || product.image_small_url || product.image_thumb_url))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 8)
+        .forEach(({ product }) => {
+          const url = product.image_front_url || product.image_url || product.image_small_url || product.image_thumb_url;
+          const thumbnail = product.image_front_small_url || product.image_small_url || product.image_thumb_url || url;
+          addRealPhotoCandidate(candidates, {
+            label: `${product.brands ? `${product.brands} · ` : ''}${product.product_name || realFoodLabel(query, detectRealFoodProfile(query, description))}`,
+            url,
+            thumbnail,
+            source: 'Open Food Facts · producto real',
+            context: `${product.product_name || ''} ${product.brands || ''} ${product.quantity || ''} ${product.categories || ''} ${product.stores || ''} ${q}`,
+            attribution: 'Foto de producto real obtenida desde Open Food Facts.'
+          }, query, description);
+        });
+      if (candidates.length >= 5) return diversifyImageCandidates(candidates, { limit: 5 });
+    }
+  }
+  return diversifyImageCandidates(candidates, { limit: 5 });
+}
+
+function imageDomainKey(item = {}) {
+  return hostFromUrl(item.context || item.url || item.thumbnail || '').replace(/^www\./, '');
+}
+
+function labelFingerprint(text = '') {
+  return normalizeFoodText(text).split(' ').filter((word) => word.length > 3 && !GENERIC_IMAGE_WORDS.has(word)).slice(0, 7).join('-');
+}
+
+function diversifyImageCandidates(items = [], options = {}) {
+  const limit = options.limit || 5;
+  const unique = [];
+  const seenUrl = new Set();
+  const seenThumb = new Set();
+  const seenFingerprints = new Set();
+  const domainCounts = new Map();
+
+  for (const item of items) {
+    if (!item?.url) continue;
+    const cleanUrl = String(item.url).split('?')[0].toLowerCase();
+    const cleanThumb = String(item.thumbnail || item.url).split('?')[0].toLowerCase();
+    if (seenUrl.has(cleanUrl) || seenThumb.has(cleanThumb)) continue;
+    const fp = labelFingerprint(`${item.label || ''} ${item.context || ''}`);
+    const domain = imageDomainKey(item);
+    const count = domainCounts.get(domain) || 0;
+    if (fp && seenFingerprints.has(fp) && unique.length >= 2) continue;
+    if (domain && count >= 2 && unique.length >= 3) continue;
+    unique.push(item);
+    seenUrl.add(cleanUrl);
+    seenThumb.add(cleanThumb);
+    if (fp) seenFingerprints.add(fp);
+    if (domain) domainCounts.set(domain, count + 1);
+    if (unique.length >= limit) break;
+  }
+
+  if (unique.length < limit) {
+    for (const item of items) {
+      if (!item?.url || unique.some((x) => x.url === item.url || x.thumbnail === item.thumbnail)) continue;
+      unique.push(item);
+      if (unique.length >= limit) break;
+    }
+  }
+  return unique.slice(0, limit);
+}
+
+function googleImageScoreV2(item = {}, query = '', description = '') {
+  const profile = detectRealFoodProfile(query, description);
+  const industrial = isIndustrialProductSearch(query, description) || profile.category === 'industrial';
+  const title = item.title || '';
+  const snippet = item.snippet || '';
+  const contextLink = item.image?.contextLink || '';
+  const displayLink = item.displayLink || '';
+  const imageUrl = item.link || '';
+  const haystack = normalizeFoodText(`${title} ${snippet} ${contextLink} ${displayLink} ${imageUrl}`);
+  const tokens = industrial ? productExactTokens(query, description) : relevanceTokens(query, description, profile);
+  const badVisual = ['logo','icono','vector','clipart','dibujo','caricatura','emoji','menu','menú','plantilla','ilustracion','ilustración','pdf','mapa','banner','poster','collage','infografia','infografía'];
+  let score = 0;
+
+  for (const token of tokens) {
+    if (haystack.includes(token)) score += industrial ? 34 : 28;
+  }
+  for (const term of profile.terms || []) {
+    const parts = normalizeFoodText(term).split(' ').filter((w) => w.length > 2 && !GENERIC_IMAGE_WORDS.has(w));
+    for (const part of parts) if (haystack.includes(part)) score += industrial ? 7 : 5;
+  }
+  for (const bad of badVisual) if (haystack.includes(normalizeFoodText(bad))) score -= industrial ? 45 : 80;
+
+  const allowed = allowedImageDomain(contextLink || imageUrl, displayLink);
+  if (allowed) score += industrial ? 52 : 28;
+  if (industrial && /(exito|carulla|jumbo|olimpica|d1|tiendasd1|alkosto|makro|pricesmart|farmatodo|merqueo|rappi|mercadolibre|nutresa|postobon|coca-cola|alpina|pepsi|colombina|nestle)/i.test(`${displayLink} ${contextLink}`)) score += 35;
+
+  const width = Number(item.image?.width || 0);
+  const height = Number(item.image?.height || 0);
+  if (width >= 450 && height >= 300) score += 8;
+  if (industrial && width >= 250 && height >= 250) score += 8;
+  if (width && height && (width < 180 || height < 140)) score -= 40;
+
+  if (!industrial && /(plato|receta|comida|restaurante|food|dish|plate)/.test(haystack)) score += 10;
+  if (industrial && /(producto|botella|lata|empaque|bebida|drink|supermercado|market|tienda|ml|litro|paquete|pack)/.test(haystack)) score += 24;
+  if (industrial && /(receta|plato|preparacion|preparación|cocinar|casero|served|restaurant dish)/.test(haystack)) score -= 25;
+  return score;
+}
+
+function googleItemToCandidateV2(item = {}, query = '', description = '') {
+  const thumbnail = item.image?.thumbnailLink || item.link;
+  const url = item.link || thumbnail;
+  const context = item.image?.contextLink || item.formattedUrl || item.displayLink || '';
+  return {
+    label: item.title || realFoodLabel(query, detectRealFoodProfile(query, description)),
+    url,
+    thumbnail,
+    source: `Google CSE · ${item.displayLink || hostFromUrl(context || url) || 'fuente configurada'}`,
+    context: `${context} ${item.snippet || ''}`.trim(),
+    attribution: 'Imagen sugerida desde fuentes configuradas para alimentos, restaurantes, recetas o productos.'
+  };
+}
+
+async function fetchGoogleCseCandidatesV2(query = '', description = '') {
+  if (!GOOGLE_CSE_API_KEY || !GOOGLE_CSE_ID) return [];
+  const profile = detectRealFoodProfile(query, description);
+  const industrial = isIndustrialProductSearch(query, description) || profile.category === 'industrial';
+  const terms = realFoodTerms(query, description).slice(0, industrial ? 12 : 10);
+  const candidates = [];
+  const domains = profileDomainList(profile, query, description);
+  const baseParams = {
+    key: GOOGLE_CSE_API_KEY,
+    cx: GOOGLE_CSE_ID,
+    searchType: 'image',
+    safe: 'active',
+    hl: 'es',
+    gl: 'co',
+    num: '10'
+  };
+  if (!industrial) {
+    baseParams.imgType = 'photo';
+    baseParams.imgSize = 'large';
+  }
+
+  const requests = [];
+  const rawName = String(query || '').trim();
+
+  if (industrial) {
+    const brandAware = productBrandAwareQuery(query, description);
+    const presentation = extractPresentationText(`${query} ${description}`);
+    const directTerms = [...new Set([
+      brandAware && presentation ? `${brandAware} ${presentation}` : '',
+      rawName ? `${rawName} producto original` : '',
+      rawName ? `${rawName} supermercado Colombia` : '',
+      rawName ? `${rawName} botella lata paquete empaque` : '',
+      ...terms
+    ].filter(Boolean))];
+    for (const domain of INDUSTRIAL_DOMAINS.slice(0, 42)) {
+      for (const term of directTerms.slice(0, 4)) {
+        requests.push({ q: `${term} site:${domain}` });
+        requests.push({ q: term, siteSearch: domain, siteSearchFilter: 'i' });
+      }
+    }
+    for (const term of directTerms.slice(0, 8)) requests.push({ q: term });
+  } else {
+    const corrientazoTerms = [...terms, ...corrientazoContextVariants(profile, query, description)].filter(Boolean);
+    for (const term of corrientazoTerms.slice(0, 8)) requests.push({ q: term });
+    for (const domain of domains.slice(0, 36)) {
+      requests.push({ q: corrientazoTerms[0] || query, siteSearch: domain, siteSearchFilter: 'i' });
+    }
+    for (const domain of domains.slice(0, 24)) {
+      requests.push({ q: corrientazoTerms[1] || corrientazoTerms[0] || query, siteSearch: domain, siteSearchFilter: 'i' });
+    }
+  }
+
+  for (const request of requests.slice(0, industrial ? 90 : 70)) {
+    const params = new URLSearchParams({ ...baseParams, ...request });
+    params.set('_ql', String(Date.now()).slice(-6));
+    const json = await fetchJsonSafe(`https://www.googleapis.com/customsearch/v1?${params.toString()}`, { timeout: 7000 });
+    const items = Array.isArray(json?.items) ? json.items : [];
+    const ranked = items
+      .filter((item) => item?.link && item?.image?.thumbnailLink)
+      .map((item) => ({ item, score: googleImageScoreV2(item, query, description) }))
+      .filter(({ item, score }) => score >= (industrial ? 4 : 18) && candidateMatchesSearch(googleItemToCandidateV2(item, query, description), query, description))
+      .sort((a, b) => b.score - a.score)
+      .map(({ item }) => googleItemToCandidateV2(item, query, description));
+    for (const item of ranked) addRealPhotoCandidate(candidates, item, query, description);
+    if (candidates.length >= 8) break;
+  }
+  return diversifyImageCandidates(candidates, { limit: 5 });
+}
+
+function loremFlickrCandidates(profile, query = '', description = '') {
+  const label = realFoodLabel(query, profile);
+  const base = `${query}|${description}|${profile.id}|v120`;
+  const exactTokens = relevanceTokens(query, description, profile).slice(0, 3);
+  const tagsList = [];
+  for (const tags of profile.tags || []) tagsList.push(Array.isArray(tags) ? tags : [tags]);
+  tagsList.push(exactTokens.concat(['food']).filter(Boolean));
+  tagsList.push([profile.label, 'food', 'plate'].map(normalizeFoodText).filter(Boolean));
+  return tagsList.slice(0, 5).map((tags, idx) => {
+    const cleaned = tags.join(',').replace(/\s+/g, ',').split(',').map(normalizeFoodText).filter(Boolean).slice(0, 5);
+    const lock = (hashInt(`${base}|${idx}|${cleaned.join('|')}`) % 900000) + 10000;
+    const url = `https://loremflickr.com/900/620/${cleaned.map(encodeURIComponent).join(',')}?lock=${lock}`;
+    return {
+      label: `${label} · foto real ${idx + 1}`,
+      url,
+      thumbnail: url,
+      source: 'Fotos reales por etiquetas del producto',
+      context: cleaned.join(', '),
+      attribution: 'Foto real sugerida por etiquetas específicas del producto.'
+    };
+  });
+}
+
+async function realFoodImageSuggestions(query = '', description = '') {
+  const profile = detectRealFoodProfile(query, description);
+  const industrial = isIndustrialProductSearch(query, description) || profile.category === 'industrial';
+  const productCandidates = industrial ? await fetchOpenFoodFactsCandidates(query, description) : [];
+  const googleCandidates = await fetchGoogleCseCandidatesV2(query, description);
+  const candidates = diversifyImageCandidates([...productCandidates, ...googleCandidates], { limit: 5 });
+
+  if (industrial) {
+    return {
+      provider: productCandidates.length
+        ? 'Open Food Facts + Google CSE · productos reales'
+        : (googleCandidates.length ? 'Google CSE · supermercados y marcas' : 'Sin resultados útiles de productos'),
+      images: candidates,
+      googleWorking: Boolean(googleCandidates.length),
+      productWorking: Boolean(productCandidates.length),
+      usingFallback: false,
+      profile: profile.id,
+      terms: realFoodTerms(query, description).slice(0, 5)
+    };
+  }
+
+  if (candidates.length >= 4) {
+    return { provider: 'Google CSE · búsqueda específica por corrientazo', images: candidates.slice(0, 5), googleWorking: true, usingFallback: false, profile: profile.id, terms: realFoodTerms(query, description).slice(0, 5) };
+  }
+
+  const fallback = [...candidates];
+  loremFlickrCandidates(profile, query, description).forEach(item => addRealPhotoCandidate(fallback, item, query, description));
+  return {
+    provider: candidates.length ? 'Google CSE + fotos reales por etiquetas del producto' : 'Fotos reales por etiquetas del producto',
+    images: diversifyImageCandidates(fallback, { limit: 5 }),
+    googleWorking: Boolean(googleCandidates.length),
+    productWorking: false,
+    usingFallback: fallback.length > candidates.length,
+    profile: profile.id,
+    terms: realFoodTerms(query, description).slice(0, 5)
+  };
+}
+
+app.post('/api/images/import', auth(RESTAURANT_ROLES), async (req, res) => {
+  try {
+    const remoteUrl = String(req.body.url || '').trim();
+    const thumbnailUrl = String(req.body.thumbnail || '').trim();
+    const label = String(req.body.label || req.body.name || 'imagen').trim();
+    const targetUrl = remoteUrl || thumbnailUrl;
+    if (!targetUrl) return res.status(400).json({ message: 'Selecciona una imagen para importarla.' });
+    if (targetUrl.startsWith('/uploads/')) {
+      return res.status(201).json({ url: targetUrl, message: 'Imagen agregada al inventario.' });
+    }
+    try {
+      const localUrl = await downloadImageToUploads(targetUrl, label);
+      return res.status(201).json({ url: localUrl, message: 'Foto real importada y guardada en QuickLunch.' });
+    } catch (firstErr) {
+      if (thumbnailUrl && thumbnailUrl !== targetUrl) {
+        const localUrl = await downloadImageToUploads(thumbnailUrl, label);
+        return res.status(201).json({ url: localUrl, message: 'Miniatura importada y guardada porque la imagen original bloqueó la descarga.' });
+      }
+      throw firstErr;
     }
   } catch (err) {
-    console.warn('No se pudo consultar Wikimedia Commons:', err.message);
+    res.status(400).json({ message: err.message || 'No se pudo importar la imagen. Se puede usar el enlace original.' });
   }
-  while (results.length < 5) {
-    const sig = results.length + 11;
-    results.push({ label: `Búsqueda web ${results.length + 1}: ${query}`, url: `https://loremflickr.com/640/480/${encodeURIComponent(query.replace(/\s+/g,','))},food?lock=${sig}`, source: 'internet' });
+});
+
+app.get('/api/images/suggest', auth(RESTAURANT_ROLES), async (req, res) => {
+  const query = String(req.query.q || '').trim();
+  const description = String(req.query.description || '').trim();
+  if (hasBadWords(`${query} ${description}`)) {
+    return res.status(400).json({ message: 'La búsqueda contiene palabras inapropiadas. Ajusta el nombre o descripción del producto.' });
   }
-  res.json(results.slice(0, 5));
+  if (query.length < 2) return res.status(400).json({ message: 'Escribe mejor el nombre del producto para buscar imágenes.' });
+
+  const result = await realFoodImageSuggestions(query, description);
+  const images = asArray(result.images);
+  res.json({
+    query,
+    description,
+    provider: result.provider,
+    help: images.length
+      ? 'Imágenes sugeridas según el nombre y descripción. Para productos empacados escribe marca y presentación; para platos agrega preparación o acompañamientos.'
+      : 'No se encontraron fotos útiles. Revisa la ortografía, agrega marca/presentación si es un producto industrial o sube una imagen manualmente.',
+    configured: Boolean(GOOGLE_CSE_API_KEY && GOOGLE_CSE_ID),
+    googleWorking: Boolean(result.googleWorking),
+    productWorking: Boolean(result.productWorking),
+    usingFallback: Boolean(result.usingFallback),
+    internetSearch: Boolean(result.googleWorking || result.productWorking),
+    sourceDomains: IMAGE_SEARCH_DOMAINS,
+    images
+  });
+});
+
+app.get('/api/images/diagnostics', auth(RESTAURANT_ROLES), async (req, res) => {
+  const q = String(req.query.q || 'tilapia frita').trim();
+  const description = String(req.query.description || 'pescado frito servido en plato de almuerzo').trim();
+  const result = await realFoodImageSuggestions(q, description);
+  const images = asArray(result.images);
+  res.json({
+    provider: result.provider,
+    ok: true,
+    query: q,
+    description,
+    configured: Boolean(GOOGLE_CSE_API_KEY && GOOGLE_CSE_ID),
+    googleWorking: Boolean(result.googleWorking),
+    productWorking: Boolean(result.productWorking),
+    usingFallback: Boolean(result.usingFallback),
+    sourceDomains: IMAGE_SEARCH_DOMAINS,
+    returned: images.length,
+    internetSearch: Boolean(result.googleWorking || result.productWorking),
+    note: 'Esta versión combina Google CSE para platos de corrientazo y Open Food Facts para productos empacados, evitando galerías genéricas repetidas.',
+    sample: images.map((img) => ({ title: img.label, thumbnail: img.thumbnail, provider: img.source, context: img.context }))
+  });
 });
 
 app.get('/api/restaurant/staff', auth(RESTAURANT_ROLES), restaurantGuard, requireRestaurantFull, (req, res) => {
@@ -947,12 +2066,16 @@ app.get('/api/restaurant/staff', auth(RESTAURANT_ROLES), restaurantGuard, requir
 app.post('/api/restaurant/staff', auth(RESTAURANT_ROLES), restaurantGuard, requireRestaurantFull, (req, res) => {
   const id = getRestaurantId(req);
   const role = req.body.role === 'restaurant_owner' ? 'restaurant_owner' : 'restaurant_staff';
+  const username = cleanUser(req.body.username);
+  const email = cleanUser(req.body.email || `${username}@quicklunch.local`);
+  if (!username || username.length < 3) return res.status(400).json({ message: 'El usuario debe tener mínimo 3 caracteres.' });
+  if (usersDb.prepare('SELECT id FROM accounts WHERE lower(username)=lower(?) OR lower(email)=lower(?)').get(username, email)) return res.status(409).json({ message: 'Ese usuario o correo ya existe.' });
   try {
-    const info = usersDb.prepare(`INSERT INTO accounts (username,email,password_hash,password_plain,role,role_label,status,city,full_name,restaurant_id) VALUES (?,?,?,?,?,?,?,?,?,?)`)
-      .run(req.body.username, req.body.email || `${req.body.username}@quicklunch.local`, bcrypt.hashSync(req.body.password || 'quick2026', 10), req.body.password || 'quick2026', role, req.body.role_label || (role === 'restaurant_owner' ? 'Dueño asociado' : 'Cajero / Operador de reservas'), 'active', 'Cali', req.body.full_name || req.body.username, id);
-    res.status(201).json(serializeAccount(usersDb.prepare('SELECT * FROM accounts WHERE id=?').get(info.lastInsertRowid)));
-  } catch {
-    res.status(409).json({ message: 'Ese usuario o correo ya existe.' });
+    const info = usersDb.prepare(`INSERT INTO accounts (username,email,password_hash,password_plain,role,role_label,status,city,full_name,phone,restaurant_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(username, email, bcrypt.hashSync(req.body.password || 'quick2026', 10), req.body.password || 'quick2026', role, req.body.role_label || (role === 'restaurant_owner' ? 'Dueño asociado' : 'Cajero / Operador de reservas'), 'active', 'Cali', req.body.full_name || username, req.body.phone || '', id);
+    res.status(201).json({ message: 'Colaborador creado.', user: serializeAccount(usersDb.prepare('SELECT * FROM accounts WHERE id=?').get(info.lastInsertRowid)) });
+  } catch (err) {
+    res.status(409).json({ message: 'No se pudo crear colaborador.', detail: err.message });
   }
 });
 
@@ -960,8 +2083,35 @@ app.patch('/api/restaurant/staff/:id', auth(RESTAURANT_ROLES), restaurantGuard, 
   const id = getRestaurantId(req);
   const acc = usersDb.prepare('SELECT * FROM accounts WHERE id=? AND restaurant_id=?').get(req.params.id, id);
   if (!acc) return res.status(404).json({ message: 'Colaborador no encontrado.' });
-  usersDb.prepare('UPDATE accounts SET role_label=?, status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?').run(req.body.role_label || acc.role_label, req.body.status || acc.status, acc.id);
-  res.json(serializeAccount(usersDb.prepare('SELECT * FROM accounts WHERE id=?').get(acc.id)));
+  const updates = []; const values = [];
+  if (req.body.username !== undefined) {
+    const username = cleanUser(req.body.username);
+    const duplicate = usersDb.prepare('SELECT id FROM accounts WHERE lower(username)=lower(?) AND id<>?').get(username, acc.id);
+    if (duplicate) return res.status(409).json({ message: 'Ese usuario ya existe.' });
+    updates.push('username=?'); values.push(username);
+  }
+  if (req.body.email !== undefined) {
+    const email = cleanUser(req.body.email);
+    const duplicate = usersDb.prepare('SELECT id FROM accounts WHERE lower(email)=lower(?) AND id<>?').get(email, acc.id);
+    if (duplicate) return res.status(409).json({ message: 'Ese correo ya existe.' });
+    updates.push('email=?'); values.push(email);
+  }
+  ['full_name','phone','role_label','status'].forEach((k) => { if (req.body[k] !== undefined) { updates.push(`${k}=?`); values.push(req.body[k]); } });
+  if (req.body.role !== undefined) { const role = req.body.role === 'restaurant_owner' ? 'restaurant_owner' : 'restaurant_staff'; updates.push('role=?'); values.push(role); }
+  if (req.body.password) { updates.push('password_hash=?'); values.push(bcrypt.hashSync(String(req.body.password), 10)); updates.push('password_plain=?'); values.push(String(req.body.password)); }
+  if (!updates.length) return res.status(400).json({ message: 'No hay cambios.' });
+  values.push(acc.id);
+  usersDb.prepare(`UPDATE accounts SET ${updates.join(', ')}, updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(...values);
+  res.json({ message: 'Colaborador actualizado.', user: serializeAccount(usersDb.prepare('SELECT * FROM accounts WHERE id=?').get(acc.id)) });
+});
+
+app.delete('/api/restaurant/staff/:id', auth(RESTAURANT_ROLES), restaurantGuard, requireRestaurantFull, (req, res) => {
+  const id = getRestaurantId(req);
+  const acc = usersDb.prepare('SELECT * FROM accounts WHERE id=? AND restaurant_id=?').get(req.params.id, id);
+  if (!acc) return res.status(404).json({ message: 'Colaborador no encontrado.' });
+  if (Number(acc.id) === Number(req.user.id)) return res.status(409).json({ message: 'No puedes eliminar tu propio acceso desde aquí.' });
+  usersDb.prepare("UPDATE accounts SET status='inactive', restaurant_id=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?").run(acc.id);
+  res.json({ ok: true, message: 'Acceso eliminado correctamente.' });
 });
 
 app.get('/api/restaurant/inventory', auth(RESTAURANT_ROLES), restaurantGuard, (req, res) => {
@@ -992,13 +2142,25 @@ app.patch('/api/restaurant/inventory/:id', auth(RESTAURANT_ROLES), restaurantGua
   const restaurantId = getRestaurantId(req);
   if (Number(item.restaurant_id) !== Number(restaurantId)) return res.status(403).json({ message: 'No autorizado.' });
   const category = req.body.category || item.category;
+  const newName = String(req.body.name || item.name || '').trim();
+  const duplicate = restaurantsDb.prepare('SELECT id FROM inventory_items WHERE restaurant_id=? AND category=? AND lower(name)=lower(?) AND id<>? AND active=1').get(restaurantId, category, newName, item.id);
+  if (duplicate) return res.status(409).json({ message: 'Ya existe otro alimento con ese nombre en la misma categoría.' });
   const isCompletePlate = category === 'complete_plate';
   const isSpecial = isCompletePlate ? 0 : (req.body.is_special ?? item.is_special ? 1 : 0);
   const price = isCompletePlate ? moneyInt(req.body.price ?? item.price) : 0;
   const additionalCost = isSpecial ? moneyInt(req.body.additional_cost ?? item.additional_cost) : 0;
   restaurantsDb.prepare('UPDATE inventory_items SET category=?, name=?, description=?, cost=0, price=?, stock=?, is_special=?, additional_cost=?, image_url=?, image_source=?, active=?, updated_at=CURRENT_TIMESTAMP WHERE id=?')
-    .run(category, req.body.name || item.name, req.body.description ?? item.description, price, moneyInt(req.body.stock ?? item.stock), isSpecial, additionalCost, req.body.image_url ?? item.image_url, req.body.image_source ?? item.image_source, req.body.active ?? item.active, item.id);
+    .run(category, newName, req.body.description ?? item.description, price, moneyInt(req.body.stock ?? item.stock), isSpecial, additionalCost, req.body.image_url ?? item.image_url, req.body.image_source ?? item.image_source, req.body.active ?? item.active, item.id);
   res.json(restaurantsDb.prepare('SELECT * FROM inventory_items WHERE id=?').get(item.id));
+});
+
+app.delete('/api/restaurant/inventory/:id', auth(RESTAURANT_ROLES), restaurantGuard, (req, res) => {
+  const item = restaurantsDb.prepare('SELECT * FROM inventory_items WHERE id=?').get(req.params.id);
+  if (!item) return res.status(404).json({ message: 'Ítem no encontrado.' });
+  const restaurantId = getRestaurantId(req);
+  if (Number(item.restaurant_id) !== Number(restaurantId)) return res.status(403).json({ message: 'No autorizado.' });
+  restaurantsDb.prepare('UPDATE inventory_items SET active=0, updated_at=CURRENT_TIMESTAMP WHERE id=?').run(item.id);
+  res.json({ ok: true, message: 'Elemento eliminado del inventario.' });
 });
 
 app.get('/api/restaurant/menus', auth(RESTAURANT_ROLES), restaurantGuard, (req, res) => {
@@ -1007,19 +2169,36 @@ app.get('/api/restaurant/menus', auth(RESTAURANT_ROLES), restaurantGuard, (req, 
   res.json(menus.map((m) => ({ ...m, items: restaurantsDb.prepare('SELECT * FROM menu_items WHERE menu_id=?').all(m.id).map((x) => ({ ...x, plate: parseJson(x.plate_json) })) })));
 });
 
-app.post('/api/restaurant/menus', auth(RESTAURANT_ROLES), restaurantGuard, (req, res) => {
-  const restaurantId = getRestaurantId(req);
-  const d = req.body;
-  const info = restaurantsDb.prepare('INSERT INTO daily_menus (restaurant_id,menu_date,mode,title,notes,base_price,sell_soup_separately,soup_price,sell_tray_separately,tray_price,max_lunches_per_order,status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
-    .run(restaurantId, d.menu_date || getToday(), d.mode || 'mixed', d.title || 'Menú del día', d.notes || '', moneyInt(d.base_price, 15000), d.sell_soup_separately ? 1 : 0, moneyInt(d.soup_price, 6000), d.sell_tray_separately ? 1 : 0, moneyInt(d.tray_price, 13000), Math.min(10, moneyInt(d.max_lunches_per_order, 10)), d.status || 'published');
+function saveRestaurantMenu(restaurantId, d = {}) {
+  const menuDate = d.menu_date || getToday();
+  const existing = restaurantsDb.prepare('SELECT * FROM daily_menus WHERE restaurant_id=? AND menu_date=? ORDER BY id DESC LIMIT 1').get(restaurantId, menuDate);
+  let menuId;
+  let mode = 'created';
+  if (existing) {
+    menuId = existing.id;
+    mode = 'updated';
+    restaurantsDb.prepare('UPDATE daily_menus SET mode=?, title=?, notes=?, base_price=?, sell_soup_separately=?, soup_price=?, sell_tray_separately=?, tray_price=?, max_lunches_per_order=?, status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?')
+      .run(d.mode || 'mixed', d.title || 'Menú del día', d.notes || '', moneyInt(d.base_price, 15000), d.sell_soup_separately ? 1 : 0, moneyInt(d.soup_price, 6000), d.sell_tray_separately ? 1 : 0, moneyInt(d.tray_price, 13000), Math.min(10, moneyInt(d.max_lunches_per_order, 10)), d.status || 'published', menuId);
+    restaurantsDb.prepare('DELETE FROM menu_items WHERE menu_id=?').run(menuId);
+  } else {
+    const info = restaurantsDb.prepare('INSERT INTO daily_menus (restaurant_id,menu_date,mode,title,notes,base_price,sell_soup_separately,soup_price,sell_tray_separately,tray_price,max_lunches_per_order,status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
+      .run(restaurantId, menuDate, d.mode || 'mixed', d.title || 'Menú del día', d.notes || '', moneyInt(d.base_price, 15000), d.sell_soup_separately ? 1 : 0, moneyInt(d.soup_price, 6000), d.sell_tray_separately ? 1 : 0, moneyInt(d.tray_price, 13000), Math.min(10, moneyInt(d.max_lunches_per_order, 10)), d.status || 'published');
+    menuId = info.lastInsertRowid;
+  }
   const stmt = restaurantsDb.prepare('INSERT INTO menu_items (menu_id,inventory_item_id,category,name,stock,remaining,price_delta,price,is_special,image_url,plate_json) VALUES (?,?,?,?,?,?,?,?,?,?,?)');
   for (const item of d.items || []) {
     const inv = item.inventory_item_id ? restaurantsDb.prepare('SELECT * FROM inventory_items WHERE id=?').get(item.inventory_item_id) : null;
     const category = item.category || inv?.category || 'complete_plate';
     const isComplete = category === 'complete_plate';
-    stmt.run(info.lastInsertRowid, item.inventory_item_id || null, category, item.name || inv?.name, moneyInt(item.stock ?? inv?.stock), moneyInt(item.remaining ?? item.stock ?? inv?.stock), isComplete ? 0 : moneyInt(item.price_delta ?? inv?.additional_cost), isComplete ? moneyInt(item.price ?? inv?.price) : 0, isComplete ? 0 : moneyInt(item.is_special ?? inv?.is_special), item.image_url || inv?.image_url || '', jsonString(item.plate || {}));
+    stmt.run(menuId, item.inventory_item_id || null, category, item.name || inv?.name, moneyInt(item.stock ?? inv?.stock), moneyInt(item.remaining ?? item.stock ?? inv?.stock), isComplete ? 0 : moneyInt(item.price_delta ?? inv?.additional_cost), isComplete ? moneyInt(item.price ?? inv?.price) : 0, isComplete ? 0 : moneyInt(item.is_special ?? inv?.is_special), item.image_url || inv?.image_url || '', jsonString(item.plate || {}));
   }
-  res.status(201).json({ id: info.lastInsertRowid });
+  return { id: menuId, mode };
+}
+
+app.post('/api/restaurant/menus', auth(RESTAURANT_ROLES), restaurantGuard, (req, res) => {
+  const restaurantId = getRestaurantId(req);
+  const saved = saveRestaurantMenu(restaurantId, req.body);
+  res.status(saved.mode === 'created' ? 201 : 200).json({ ...saved, message: saved.mode === 'created' ? 'Menú publicado correctamente.' : 'Menú modificado correctamente.' });
 });
 
 app.get('/api/restaurant/orders/live', auth(RESTAURANT_ROLES), restaurantGuard, (req, res) => {
@@ -1033,7 +2212,7 @@ app.patch('/api/restaurant/orders/:id/status', auth(RESTAURANT_ROLES), restauran
   const order = coreDb.prepare('SELECT * FROM orders WHERE id=?').get(req.params.id);
   if (!order) return res.status(404).json({ message: 'Pedido no encontrado.' });
   if (Number(order.restaurant_id) !== Number(getRestaurantId(req))) return res.status(403).json({ message: 'No autorizado.' });
-  if (order.status === 'claimed') return res.status(409).json({ message: 'Este pedido ya fue reclamado por QR. No se puede modificar.' });
+  if (order.status === 'claimed') return res.status(409).json({ message: 'Este pedido ya fue reclamado por código. No se puede modificar.' });
   const status = req.body.status;
   if (!['preparing','ready','delayed','cancelled'].includes(status)) return res.status(400).json({ message: 'Estado inválido para esta acción.' });
   let extra = '';
@@ -1045,24 +2224,27 @@ app.patch('/api/restaurant/orders/:id/status', auth(RESTAURANT_ROLES), restauran
 });
 
 app.post('/api/restaurant/orders/scan', auth(RESTAURANT_ROLES), restaurantGuard, (req, res) => {
-  const text = String(req.body.qr_text || '').trim();
-  const codeMatch = text.match(/QL-[A-F0-9]{8}/i);
-  const publicCode = codeMatch?.[0]?.toUpperCase() || text.toUpperCase();
-  const order = coreDb.prepare('SELECT * FROM orders WHERE public_code=?').get(publicCode);
-  if (!order) return res.status(404).json({ message: 'QR inválido o pedido no encontrado.' });
-  if (Number(order.restaurant_id) !== Number(getRestaurantId(req))) return res.status(403).json({ message: 'Este QR pertenece a otro restaurante.' });
-  if (order.status === 'claimed') return res.status(409).json({ message: 'Este QR ya fue usado y dejó de tener validez.' });
+  const text = String(req.body.qr_text || req.body.delivery_code || '').trim();
+  const codeMatch = text.match(/\d{3}-?\d{3}/);
+  const publicCode = (codeMatch?.[0] || text).replace(/[^0-9]/g, '').replace(/(\d{3})(\d{3})/, '$1-$2');
+  const order = coreDb.prepare('SELECT * FROM orders WHERE restaurant_id=? AND public_code=?').get(getRestaurantId(req), publicCode);
+  if (!order) return res.status(404).json({ message: 'Código inválido o pedido no encontrado para este restaurante.' });
+  if (Number(order.restaurant_id) !== Number(getRestaurantId(req))) return res.status(403).json({ message: 'Este código pertenece a otro restaurante.' });
+  if (order.status === 'claimed') return res.status(409).json({ message: 'Este código ya fue usado y dejó de tener validez.' });
   if (['cancelled','no_show'].includes(order.status)) return res.status(409).json({ message: 'Este pedido no puede reclamarse.' });
   const paymentStatus = order.payment_method === 'cash' ? 'cash_collected_at_counter' : 'paid_released';
   coreDb.prepare("UPDATE orders SET status='claimed', claimed_at=CURRENT_TIMESTAMP, completed_at=CURRENT_TIMESTAMP, payment_status=?, commission_settled=1, settlement_amount=?, delivery_validation_json=?, updated_at=CURRENT_TIMESTAMP WHERE id=?")
-    .run(paymentStatus, order.subtotal, jsonString({ scanned_by: req.user.username, scanned_at: new Date().toISOString(), qr_text: text }), order.id);
-  res.json({ message: 'QR validado. Pedido entregado y dinero liberado al restaurante.', order: serializeOrder(coreDb.prepare('SELECT * FROM orders WHERE id=?').get(order.id)) });
+    .run(paymentStatus, order.subtotal, jsonString({ validated_by: req.user.username, validated_at: new Date().toISOString(), delivery_code: publicCode }), order.id);
+  decrementMenuStockForOrder(order);
+  res.json({ message: 'Código validado. Pedido entregado y dinero liberado al restaurante.', order: serializeOrder(coreDb.prepare('SELECT * FROM orders WHERE id=?').get(order.id)) });
 });
 
 app.get('/api/restaurant/analytics', auth(RESTAURANT_ROLES), restaurantGuard, requireRestaurantFull, (req, res) => {
   const id = getRestaurantId(req);
   const summary = coreDb.prepare("SELECT COUNT(*) orders, COALESCE(SUM(total),0) processed, COALESCE(SUM(CASE WHEN status='claimed' THEN subtotal ELSE 0 END),0) released, COALESCE(AVG(total),0) avg_ticket FROM orders WHERE restaurant_id=?").get(id);
-  const pendingHeld = coreDb.prepare("SELECT COALESCE(SUM(total),0) held FROM orders WHERE restaurant_id=? AND payment_method='online' AND status NOT IN ('claimed','cancelled')").get(id).held;
+  const sanctionsTotal = restaurantsDb.prepare('SELECT COALESCE(SUM(tax_amount),0) total FROM restaurant_penalties WHERE restaurant_id=? AND status!="reversed"').get(id).total || 0;
+  summary.released = Math.max(0, Number(summary.released || 0) - Number(sanctionsTotal || 0));
+  const pendingHeld = coreDb.prepare("SELECT COALESCE(SUM(subtotal),0) held FROM orders WHERE restaurant_id=? AND payment_method='online' AND status NOT IN ('claimed','cancelled')").get(id).held;
   const frequent = coreDb.prepare('SELECT customer_name, COUNT(*) visits, COALESCE(SUM(total),0) spent FROM orders WHERE restaurant_id=? GROUP BY user_id ORDER BY visits DESC LIMIT 10').all(id);
   const items = coreDb.prepare('SELECT items_json FROM orders WHERE restaurant_id=?').all(id).flatMap((r) => parseJson(r.items_json, []).flatMap((l) => [l.type, ...(l.components || []).map((c) => c.name), ...(l.extras || []).map((c) => c.name)].filter(Boolean)));
   const preferences = Object.entries(items.reduce((a, x) => ({ ...a, [x]: (a[x] || 0) + 1 }), {})).map(([name, value]) => ({ name, value })).sort((a,b) => b.value - a.value).slice(0, 8);
@@ -1071,23 +2253,37 @@ app.get('/api/restaurant/analytics', auth(RESTAURANT_ROLES), restaurantGuard, re
   res.json({ summary, pendingHeld, frequent, preferences, restaurant, penalties, aiTips: [
     'Activa platos personalizables: el cliente entiende mejor el valor del corrientazo base y los especiales.',
     'Configura cupos reales por franja. Evita demoras y protege los puntos de acreditación.',
-    'Los pagos en línea quedan retenidos hasta QR reclamado: prioriza preparar primero los pedidos con hora más cercana.'
+    'Los pagos digitales quedan retenidos hasta código reclamado: prioriza preparar primero los pedidos con hora más cercana.'
   ]});
 });
 
 app.post('/api/restaurant/coupons', auth(RESTAURANT_ROLES), restaurantGuard, requireRestaurantFull, (req, res) => {
-  const restaurantId = getRestaurantId(req);
-  const codeValue = String(req.body.code || req.body.name || code('PROMO')).trim().toUpperCase();
-  if (!codeValue) return res.status(400).json({ message: 'Escribe ID/nombre del cupón o promoción.' });
-  if (restaurantsDb.prepare('SELECT id FROM coupons WHERE code=?').get(codeValue)) return res.status(409).json({ message: 'Ese código ya existe.' });
-  const isRedeemable = req.body.kind === 'coupon' ? 1 : 0;
-  const info = restaurantsDb.prepare(`INSERT INTO coupons (restaurant_id,code,name,description,starts_at,ends_at,discount_type,discount_value,effect_type,effect_value,effect_scope,coverage_restaurants_json,products_json,min_purchase,previous_purchases_required,max_uses,unlimited_uses,auto_apply,is_redeemable,is_promotion,active,created_by,creator_role,creator_user_id,creator_restaurant_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .run(restaurantId, codeValue, req.body.name || codeValue, req.body.description || '', req.body.starts_at || null, req.body.ends_at || req.body.expires_at || null, req.body.discount_type || 'fixed', moneyInt(req.body.effect_value || req.body.discount_value, 0), req.body.effect_type || 'discount_percent', moneyInt(req.body.effect_value || req.body.discount_value, 0), 'restaurant', jsonString([restaurantId]), jsonString(req.body.products || []), moneyInt(req.body.min_purchase, 0), moneyInt(req.body.previous_purchases_required, 0), moneyInt(req.body.max_uses, 100), req.body.unlimited_uses ? 1 : 0, 0, isRedeemable, 1, 1, req.user.username, req.user.role, req.user.id, restaurantId);
-  res.status(201).json(serializeCoupon(restaurantsDb.prepare('SELECT * FROM coupons WHERE id=?').get(info.lastInsertRowid)));
+  try {
+    const restaurantId = getRestaurantId(req);
+    const payload = buildCouponPayload(req, { restaurantId, ownerScope: false });
+    const coupon = insertCoupon(payload, req);
+    res.status(201).json(serializeCoupon(coupon));
+  } catch (err) { res.status(400).json({ message: err.message }); }
 });
 
 app.get('/api/restaurant/coupons', auth(RESTAURANT_ROLES), restaurantGuard, (req, res) => {
   res.json(restaurantsDb.prepare('SELECT * FROM coupons WHERE restaurant_id=? ORDER BY created_at DESC').all(getRestaurantId(req)).map(serializeCoupon));
+});
+
+app.patch('/api/restaurant/coupons/:id', auth(RESTAURANT_ROLES), restaurantGuard, requireRestaurantFull, (req, res) => {
+  const restaurantId = getRestaurantId(req);
+  const current = restaurantsDb.prepare('SELECT * FROM coupons WHERE id=? AND restaurant_id=?').get(req.params.id, restaurantId);
+  if (!current) return res.status(404).json({ message: 'Cupón o descuento no encontrado en este restaurante.' });
+  try { const coupon = updateCoupon(req.params.id, { ...req, body: { ...req.body, coverage_restaurants: [restaurantId], effect_scope: 'restaurant' } }, false); res.json(serializeCoupon(coupon)); }
+  catch (err) { res.status(400).json({ message: err.message }); }
+});
+
+app.delete('/api/restaurant/coupons/:id', auth(RESTAURANT_ROLES), restaurantGuard, requireRestaurantFull, (req, res) => {
+  const restaurantId = getRestaurantId(req);
+  const current = restaurantsDb.prepare('SELECT * FROM coupons WHERE id=? AND restaurant_id=?').get(req.params.id, restaurantId);
+  if (!current) return res.status(404).json({ message: 'Cupón o descuento no encontrado en este restaurante.' });
+  restaurantsDb.prepare('UPDATE coupons SET active=0 WHERE id=?').run(req.params.id);
+  res.json({ ok: true, message: 'Beneficio eliminado/inactivado.' });
 });
 
 app.use((err, req, res, next) => {

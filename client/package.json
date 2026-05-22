@@ -1,6 +1,6 @@
 {
   "name": "quicklunch-client",
-  "version": "1.0.7",
+  "version": "1.0.24",
   "private": true,
   "type": "module",
   "scripts": {

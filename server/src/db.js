@@ -420,6 +420,18 @@ function ensureTables() {
       UNIQUE(user_id, coupon_id)
     );
 
+    CREATE TABLE IF NOT EXISTS coupon_usages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      coupon_id INTEGER NOT NULL,
+      user_id INTEGER,
+      order_id INTEGER,
+      restaurant_id INTEGER,
+      code TEXT,
+      usage_type TEXT DEFAULT 'redimido',
+      amount INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+
     CREATE TABLE IF NOT EXISTS restaurant_penalties (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       restaurant_id INTEGER NOT NULL,
@@ -568,13 +580,13 @@ function ensureSeedData() {
 
   const defaultSettings = {
     cities: { active: 'Cali', enabled: ['Cali'], comingSoon: ['Pasto', 'Bogotá'] },
-    fees: { online: 500, cash: 1000, commissionPercent: 5 },
+    fees: { online: 1500, cash: 1000, commissionPercent: 5 },
     pickup: { start: '11:00', end: '14:00', intervalMinutes: 10, capacity: 10, maxWindowMinutes: 30, cancellationLimitMinutes: 60, delayCancelMinutes: 20 },
     roles: {
       owner: 'Acceso total a administradores, usuarios, restaurantes, roles y comisiones.',
       admin: 'Acceso al panel administrativo, usuarios y restaurantes, sin poder crear roles administrativos ni usar panel de restaurante.',
       restaurant_owner: 'Dueño del restaurante con acceso total al panel de su restaurante.',
-      restaurant_staff: 'Cajero/operador: menús, pedidos y QR, sin ingresos ni estadísticas.',
+      restaurant_staff: 'Cajero/operador: menús, pedidos y códigos, sin ingresos ni estadísticas.',
       customer: 'Cliente final: restaurantes, pedidos, cupones, soporte e historial.'
     },
     legalChecklist: [
@@ -588,8 +600,8 @@ function ensureSeedData() {
       'Política de tratamiento de datos personales'
     ],
     faqs: {
-      preparing: ['Tu pedido ya entró a cocina. En esta etapa no se puede cancelar porque el restaurante ya inició la preparación.', 'Acércate a la hora reservada y espera el aviso de listo o la notificación de QR.'],
-      ready: ['Tu pedido está listo. Dirígete al restaurante y presenta el QR.', 'Si pagas en caja, paga antes de que el cajero escanee el QR.'],
+      preparing: ['Tu pedido ya entró a cocina. En esta etapa no se puede cancelar porque el restaurante ya inició la preparación.', 'Acércate a la hora reservada y espera el aviso de listo o la notificación de código.'],
+      ready: ['Tu pedido está listo. Dirígete al restaurante y presenta el código.', 'Si pagas en caja, paga antes de que el cajero valide el código.'],
       claimed: ['Puedes reportar calidad, producto incompleto o diferencia con lo pedido.', 'Adjunta una foto clara si necesitas revisión de soporte.']
     }
   };

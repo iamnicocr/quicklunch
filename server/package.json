@@ -1,6 +1,6 @@
 {
   "name": "quicklunch-server",
-  "version": "1.0.7",
+  "version": "1.0.24",
   "type": "module",
   "main": "src/server.js",
   "scripts": {

@@ -7,7 +7,28 @@
     <meta name="description" content="QuickLunch - reservas inteligentes de corrientazos con QR." />
   </head>
   <body>
+    <div id="ql-boot-fallback" style="min-height:100vh;display:grid;place-items:center;background:#fff7ed;font-family:Inter,Arial,sans-serif;color:#1e1b18;padding:24px">
+      <div style="max-width:620px;background:white;border-radius:24px;padding:24px;box-shadow:0 18px 50px rgba(76,45,12,.13);border:1px solid #f2dec5">
+        <h1 style="margin-top:0;color:#ff7a1a">Cargando QuickLunch...</h1>
+        <p>Si esta pantalla no cambia, abre la consola del navegador con F12. QuickLunch mostrará aquí cualquier error de arranque para evitar pantalla en blanco.</p>
+        <p id="ql-boot-error" style="display:none;background:#fee2e2;color:#991b1b;border-radius:14px;padding:12px;font-weight:700"></p>
+      </div>
+    </div>
     <div id="root"></div>
+    <script>
+      window.addEventListener('error', function(event) {
+        var box = document.getElementById('ql-boot-error');
+        if (!box) return;
+        box.style.display = 'block';
+        box.textContent = 'Error de carga: ' + (event.message || 'revisa que npm install haya terminado y que el cliente esté corriendo en localhost:5173');
+      });
+      window.addEventListener('unhandledrejection', function(event) {
+        var box = document.getElementById('ql-boot-error');
+        if (!box) return;
+        box.style.display = 'block';
+        box.textContent = 'Error interno: ' + ((event.reason && event.reason.message) || event.reason || 'promesa rechazada');
+      });
+    </script>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>
