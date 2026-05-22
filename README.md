@@ -331,3 +331,66 @@ El endpoint `/api/images/diagnostics` ahora devuelve también `productWorking`, 
 - El listado público de restaurantes ahora calcula `menuPublished` desde la base de datos para volver a habilitar el acceso cuando el restaurante publica menú.
 - El menú del día queda limitado a un menú por restaurante y fecha: si ya existe, el formulario lo modifica en vez de crear otro.
 - Se agregaron flechas de regreso también en pantallas de login/registro/solicitud, además de los paneles internos.
+
+## Cambios v1.0.26 - Mejoras de uso y pruebas en red local
+
+La plataforma incluye una guía flotante **Ayuda** disponible en login, panel owner/admin, panel restaurante y app cliente. La guía muestra pasos rápidos, mensajes claros, salidas visibles, validaciones, confirmaciones y apoyo contextual según el rol, sin interrumpir el flujo principal.
+
+Los ejemplos de campos se mantienen con datos genéricos como `user123`, `password123` y `usuario@email.com`.
+
+### Pruebas en una misma red WiFi
+
+Esta versión puede ejecutarse desde tu PC y abrirse desde un celular conectado a la misma red.
+
+1. En tu PC, inicia QuickLunch:
+
+```powershell
+npm run dev
+```
+
+2. Busca la IP local de tu PC:
+
+```powershell
+ipconfig
+```
+
+En WiFi, copia la dirección **IPv4**, por ejemplo:
+
+```txt
+192.168.1.10
+```
+
+3. Desde el celular, conectado a la misma WiFi, abre:
+
+```txt
+http://192.168.1.10:5173/home
+```
+
+4. Para comprobar que la API también responde desde el celular, abre:
+
+```txt
+http://192.168.1.10:4000/api/health
+```
+
+También puedes consultar desde el navegador de tu PC:
+
+```txt
+http://localhost:4000/api/network-info
+```
+
+Ese endpoint muestra las URLs LAN detectadas.
+
+### Si el celular no entra
+
+Revisa estos puntos:
+
+- Que PC y celular estén en la misma WiFi.
+- Que no estés usando datos móviles en el celular.
+- Que Windows Firewall permita Node.js en redes privadas.
+- Que no haya VPN activa.
+- Que el frontend esté en el puerto `5173` y el backend en `4000`.
+- Que el backend esté vivo en `http://localhost:4000/api/health` desde la PC.
+
+### Alternativa rápida si la red local falla
+
+Si Windows Firewall o la red del campus bloquea puertos locales, la alternativa más rápida para demo es usar **ngrok** o **LocalTunnel** para exponer temporalmente el puerto del frontend y backend. Para una entrega formal posterior, Vercel + base externa será más estable.

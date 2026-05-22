@@ -10,6 +10,7 @@ import crypto from 'crypto';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
 import { z } from 'zod';
 import {
   initDb, usersDb, restaurantsDb, coreDb, parseJson, jsonString, qlSettings, saveQlSettings,
@@ -22,9 +23,22 @@ const app = express();
 const PORT = process.env.PORT || 4000;
 const JWT_SECRET = process.env.JWT_SECRET || 'quicklunch-dev-secret';
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
+const ALLOWED_ORIGINS = (process.env.CLIENT_ORIGINS || CLIENT_ORIGIN)
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+function isLanOrigin(origin = '') {
+  return /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+)(:\d+)?$/.test(origin);
+}
 
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
-app.use(cors({ origin: CLIENT_ORIGIN, credentials: true }));
+app.use(cors({
+  credentials: true,
+  origin(origin, cb) {
+    if (!origin || ALLOWED_ORIGINS.includes(origin) || isLanOrigin(origin)) return cb(null, true);
+    return cb(new Error('Origen no permitido por QuickLunch. Agrega la URL a CLIENT_ORIGINS.'));
+  }
+}));
 app.use(express.json({ limit: '12mb' }));
 app.use(express.urlencoded({ extended: true, limit: '12mb' }));
 app.use(morgan('dev'));
@@ -696,7 +710,16 @@ function orderSupportOptions(order) {
   return ['Soporte general'];
 }
 
-app.get('/api/health', (_, res) => res.json({ ok: true, name: 'QuickLunch API', version: '1.0.23', time: new Date().toISOString() }));
+app.get('/api/health', (_, res) => res.json({ ok: true, name: 'QuickLunch API', version: '1.0.26', time: new Date().toISOString() }));
+app.get('/api/network-info', (_, res) => {
+  const addresses = [];
+  for (const entries of Object.values(os.networkInterfaces())) {
+    for (const item of entries || []) {
+      if (item.family === 'IPv4' && !item.internal) addresses.push(item.address);
+    }
+  }
+  res.json({ ok: true, port: PORT, clientPort: 5173, addresses, urls: addresses.map((ip) => ({ frontend: `http://${ip}:5173`, backend: `http://${ip}:${PORT}/api/health` })) });
+});
 app.get('/api/settings', (_, res) => res.json(qlSettings()));
 
 app.post('/api/auth/login', (req, res) => {
@@ -2291,4 +2314,4 @@ app.use((err, req, res, next) => {
   res.status(500).json({ message: 'Error interno de QuickLunch.', detail: err.message });
 });
 
-app.listen(PORT, () => console.log(`QuickLunch API corriendo en http://localhost:${PORT}`));
+app.listen(PORT, '0.0.0.0', () => console.log(`QuickLunch API corriendo en http://0.0.0.0:${PORT}`));
