@@ -145,6 +145,14 @@ function createModernAccountsTable(db) {
       wallet_balance INTEGER DEFAULT 0,
       coupons_json TEXT DEFAULT '[]',
       favorite_restaurants_json TEXT DEFAULT '[]',
+      profile_photo_url TEXT,
+      membership_type TEXT DEFAULT 'none',
+      membership_status TEXT DEFAULT 'inactive',
+      membership_starts_at TEXT,
+      membership_ends_at TEXT,
+      membership_next_billing_at TEXT,
+      membership_restaurant_id INTEGER,
+      redemption_points INTEGER DEFAULT 0,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
@@ -244,6 +252,14 @@ function ensureTables() {
       wallet_balance INTEGER DEFAULT 0,
       coupons_json TEXT DEFAULT '[]',
       favorite_restaurants_json TEXT DEFAULT '[]',
+      profile_photo_url TEXT,
+      membership_type TEXT DEFAULT 'none',
+      membership_status TEXT DEFAULT 'inactive',
+      membership_starts_at TEXT,
+      membership_ends_at TEXT,
+      membership_next_billing_at TEXT,
+      membership_restaurant_id INTEGER,
+      redemption_points INTEGER DEFAULT 0,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
@@ -545,7 +561,7 @@ function ensureTables() {
 
   // Safe migrations from earlier project versions.
   [
-    ['accounts', 'role_label', 'TEXT'], ['accounts', 'permissions_json', "TEXT DEFAULT '{}'"], ['accounts','password_plain','TEXT'],
+    ['accounts', 'role_label', 'TEXT'], ['accounts', 'permissions_json', "TEXT DEFAULT '{}'"], ['accounts','password_plain','TEXT'], ['accounts','profile_photo_url','TEXT'], ['accounts','membership_type',"TEXT DEFAULT 'none'"], ['accounts','membership_status',"TEXT DEFAULT 'inactive'"], ['accounts','membership_starts_at','TEXT'], ['accounts','membership_ends_at','TEXT'], ['accounts','membership_next_billing_at','TEXT'], ['accounts','membership_restaurant_id','INTEGER'], ['accounts','redemption_points','INTEGER DEFAULT 0'],
   ].forEach(([table, col, def]) => ensureColumn(usersDb, table, col, def));
   [
     ['restaurants','prestige_points','INTEGER DEFAULT 0'], ['restaurants','penalty_count_month','INTEGER DEFAULT 0'], ['restaurants','fees_json',"TEXT DEFAULT '{}'"],
@@ -580,10 +596,10 @@ function ensureSeedData() {
 
   const defaultSettings = {
     cities: { active: 'Cali', enabled: ['Cali'], comingSoon: ['Pasto', 'Bogotá'] },
-    fees: { online: 1500, cash: 1000, commissionPercent: 5 },
+    fees: { online: 1500, cash: 1000, commissionPercent: 5, platinumPrice: 16900, goldDiscountPercent: 30 },
     pickup: { start: '11:00', end: '14:00', intervalMinutes: 10, capacity: 10, maxWindowMinutes: 30, cancellationLimitMinutes: 60, delayCancelMinutes: 20 },
     roles: {
-      owner: 'Acceso total a administradores, usuarios, restaurantes, roles y comisiones.',
+      owner: 'Acceso total a administradores, usuarios, restaurantes, roles y tarifas.',
       admin: 'Acceso al panel administrativo, usuarios y restaurantes, sin poder crear roles administrativos ni usar panel de restaurante.',
       restaurant_owner: 'Dueño del restaurante con acceso total al panel de su restaurante.',
       restaurant_staff: 'Cajero/operador: menús, pedidos y códigos, sin ingresos ni estadísticas.',

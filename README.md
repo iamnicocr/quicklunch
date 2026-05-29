@@ -1,3 +1,25 @@
+# QuickLunch Web v1.0.35
+
+Cambios principales: traducciones ampliadas en membresía/cuenta/pedidos/IA; modo oscuro corregido en tarjetas, pedidos, inventario, cuenta y paneles; membresía Gold calculada con descuento configurable sobre almuerzos + tarifas de servicio; Platinum configurable desde Tarifas; reactivación funcional de membresías canceladas; gestión admin de beneficios de membresía por usuario; mapa enfocado en Biblioteca Universidad Javeriana Cali; Comisiones renombrado a Tarifas.
+
+## Inicio rápido
+
+```powershell
+Get-Process node -ErrorAction SilentlyContinue | Stop-Process -Force
+npm run dev
+```
+
+Si vienes de una versión vieja y hay columnas o datos mezclados:
+
+```powershell
+npm run reset-db
+npm run dev
+```
+
+---
+
+# QuickLunch Web v1.0.32
+
 # QuickLunch Web Module
 
 Versión: v1.0.12 v1.0.10
@@ -23,6 +45,14 @@ Rol: owner
 ```
 
 El rol `owner` tiene acceso total a todas las plataformas y a todos los restaurantes.
+
+## Cambios v1.0.35
+
+- Ajuste de traducciones pendientes en ayuda, membresías, pedidos y textos combinados.
+- Corrección de modo oscuro en ayuda, inventario, tarjetas de restaurante, estados de pedido y ventana de calificación.
+- Mejor adaptación automática a pantallas móviles para evitar recortes y desalineación.
+- Pedidos del restaurante y del usuario se actualizan con monitoreo frecuente para pruebas en vivo entre módulos.
+- La ventana de calificación se mantiene vinculada solo a pedidos entregados por código reclamado.
 
 ## Instalación en Windows / PowerShell
 
@@ -332,7 +362,7 @@ El endpoint `/api/images/diagnostics` ahora devuelve también `productWorking`, 
 - El menú del día queda limitado a un menú por restaurante y fecha: si ya existe, el formulario lo modifica en vez de crear otro.
 - Se agregaron flechas de regreso también en pantallas de login/registro/solicitud, además de los paneles internos.
 
-## Cambios v1.0.26 - Mejoras de uso y pruebas en red local
+## Cambios v1.0.32 - Mejoras de uso y pruebas en red local
 
 La plataforma incluye una guía flotante **Ayuda** disponible en login, panel owner/admin, panel restaurante y app cliente. La guía muestra pasos rápidos, mensajes claros, salidas visibles, validaciones, confirmaciones y apoyo contextual según el rol, sin interrumpir el flujo principal.
 
@@ -394,3 +424,110 @@ Revisa estos puntos:
 ### Alternativa rápida si la red local falla
 
 Si Windows Firewall o la red del campus bloquea puertos locales, la alternativa más rápida para demo es usar **ngrok** o **LocalTunnel** para exponer temporalmente el puerto del frontend y backend. Para una entrega formal posterior, Vercel + base externa será más estable.
+
+
+## Actualización v1.0.32
+
+Esta versión agrega el módulo de membresías Gold y Platinum para usuarios finales. Los planes solo existen por 15 o 30 días y se compran con pago simulado desde `/home/membresia`. Gold exige seleccionar un restaurante y aplica reducción de tarifa de servicio en ese restaurante; Platinum aplica beneficios en toda la app.
+
+También se reorganizó `Mi cuenta` en subventanas: perfil, ajustes, membresía y saldos. Desde ajustes se puede cambiar contraseña, correo, foto de perfil y eliminar la cuenta digitando la contraseña.
+
+La IA de QuickLunch queda como V2: entrega recomendaciones variables por usuario, restaurante y comportamiento histórico. En restaurantes se muestran productos más comprados y sugerencias operativas.
+
+El logo y favicon oficiales del prototipo están en `client/public/quicklunch-logo.svg` y `client/public/ql-favicon.svg`.
+
+Para pruebas en red local se mantiene el flujo:
+
+```powershell
+npm run dev
+```
+
+Luego abre desde el celular, en la misma WiFi, la IP local de tu PC:
+
+```txt
+http://TU-IP-LOCAL:5173/home
+```
+
+Si el celular no conecta, permite Node.js en el Firewall de Windows para redes privadas y revisa `http://localhost:4000/api/network-info` desde tu PC.
+
+
+## Cambios v1.0.32
+
+- Membresía Gold ajustada como tiquetera: calcula el valor con base en el precio del corrientazo del restaurante elegido, carga saldo válido para ese restaurante y cobra un valor menor simulado.
+- Membresía Platinum con precio fijo de $16.900.
+- Cupones integrados como subventana de Mi cuenta.
+- Encabezado de cuenta con saldo total de cupones, recargas y tiqueteras.
+- Vista de membresía con cancelar, renovar o mejorar a Platinum cuando aplica.
+- Histórico de pedidos completados/cancelados para el restaurante con búsqueda y filtros.
+- Logo QuickLunch adaptado desde el símbolo original, sin letras, y conservando favicon independiente.
+
+## Actualización v1.0.32
+
+Esta versión agrega el módulo de seguimiento y análisis para QuickLunch y para cada restaurante, con informes visuales, gráficas y recomendaciones operativas calculadas desde los datos reales guardados en la base local.
+
+### Nuevas secciones
+
+- `/admin/analitica`: informe integral del software, ingresos libres de la app, crecimiento de ventas, nuevos clientes, restaurantes líderes, productos más comprados, mezcla de estados y métodos de pago.
+- `/<restaurante>/analitica`: informe del restaurante, ingresos liberados, retenidos, productos favoritos, clientes frecuentes, días de mayor concurrencia y recomendaciones IA.
+- `/admin/cuenta`: vista de cuenta administrativa con rol, correo, acceso e indicadores generales.
+- `/<restaurante>/cuenta`: vista de cuenta del restaurante con acceso, rol, restaurante asociado e indicadores.
+- `/home/cuenta`: nueva subventana “Configuración de la app” con idioma, aspecto y tamaño de interfaz.
+
+### Membresía Gold corregida
+
+Gold funciona como tiquetera sin vencimiento por fecha. Al comprar Gold se cargan 15 o 30 almuerzos como saldo exclusivo del restaurante elegido. El usuario recibe el crédito completo calculado con el precio del corrientazo del restaurante, pero paga un precio reducido. La membresía se agota cuando se consume ese saldo.
+
+### Membresía Platinum corregida
+
+Platinum mantiene precio fijo de $16.900 y aplica beneficios globales en toda QuickLunch según el plan activo.
+
+### Configuración visual
+
+El usuario puede ajustar:
+
+- Idioma: español, inglés o portugués para navegación y elementos principales.
+- Aspecto: claro u oscuro.
+- Tamaño: compacto, normal o grande. El tamaño modifica texto y tarjetas para mostrar más o menos contenido en pantalla.
+
+### Mapa de Cali
+
+El mapa principal queda enfocado en el sur de Cali, alrededor de la Pontificia Universidad Javeriana Cali.
+
+### Ejecución
+
+```powershell
+npm config set registry https://registry.npmjs.org/
+npm cache clean --force
+npm run install:all
+npm run dev
+```
+
+Si vienes de una versión anterior con base vieja:
+
+```powershell
+npm run reset-db
+npm run dev
+```
+
+
+## Actualización v1.0.32
+
+- Traducciones ampliadas en español, inglés y portugués sobre pantallas de cliente, cuenta, membresía, pedidos, soporte, navegación y configuración.
+- Modo oscuro corregido en botones de regresar/cerrar sesión, recuadros de cuenta, saldos, tarjetas, formularios, mensajes y navegación inferior.
+- Tamaño grande de app ajustado para evitar recortes en membresías y pedido; los bloques críticos pasan a verse uno por uno.
+- Navegación inferior del cliente centrada nuevamente con 5 accesos.
+- Gold mantiene créditos de tiquetera, pero los beneficios visuales/de tarifa duran el periodo comprado + 2 días.
+- Gold exonera la tarifa de servicio en el restaurante elegido; Platinum aplica 50% de descuento en tarifa de servicio.
+- Cuenta administrativa y cuenta restaurante incorporan ajustes de cuenta, cambio de contraseña, correo, foto de perfil, eliminación cuando aplica y configuración visual/idioma/tamaño.
+
+
+## Cambios v1.0.33
+
+- Se agregó **Analítica** al panel del restaurante con datos únicamente del restaurante conectado.
+- Se agregó **Cuenta** al panel del restaurante, con cambios de perfil, foto, correo, contraseña, idioma, modo claro/oscuro y tamaño de app.
+- La ayuda contextual ahora cambia según la plataforma: cliente, restaurante o administración QuickLunch.
+- Se ampliaron traducciones en membresías, pedidos, soporte, IA, cuenta, analítica y textos de estado.
+- Se reforzó el modo oscuro en tarjetas de datos, pedidos, cuenta, saldos, botones, mapa y analítica.
+- Se muestran almuerzos Gold restantes con base en el saldo de tiquetera del restaurante elegido.
+- Se permite reactivar membresía cancelada desde Membresía y desde Cuenta > Membresía.
+

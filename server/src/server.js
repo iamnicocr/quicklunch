@@ -377,9 +377,11 @@ function sign(account) {
   return jwt.sign({ id: account.id, username: account.username, role: account.role, restaurant_id: account.restaurant_id }, JWT_SECRET, { expiresIn: '12h' });
 }
 
+function isCustomerAccessRole(role) { return ['customer','gold','platinum'].includes(String(role || '').toLowerCase()); }
 function canAccess(user, required = []) {
   if (!required.length) return true;
   if (user.role === 'owner') return true;
+  if (required.includes('customer') && isCustomerAccessRole(user.role)) return true;
   return required.includes(user.role);
 }
 
@@ -427,7 +429,8 @@ function defaultRestaurantSettings(settings = qlSettings()) {
 
 function defaultFees() {
   const s = qlSettings();
-  const online = moneyInt(s.fees?.online, 1500); return { online: online === 500 ? 1500 : online, cash: moneyInt(s.fees?.cash, 1000), commissionPercent: moneyInt(s.fees?.commissionPercent, 5) };
+  const online = moneyInt(s.fees?.online, 1500);
+  return { online: online === 500 ? 1500 : online, cash: moneyInt(s.fees?.cash, 1000), commissionPercent: moneyInt(s.fees?.commissionPercent, 5), platinumPrice: moneyInt(s.fees?.platinumPrice, 16900), goldDiscountPercent: moneyInt(s.fees?.goldDiscountPercent, 30) };
 }
 
 function getRestaurantId(req) {
@@ -452,9 +455,53 @@ function getRestaurantFees(restaurantId) {
   return { ...defaultFees(), ...parseJson(r?.fees_json, {}) };
 }
 
-function calculateFee(paymentMethod, lunchCount, restaurantId) {
+const MEMBERSHIP_PLANS = {
+  gold: {
+    label: 'Gold', color: 'oro', restaurantRequired: true, ticketCounts: { 15: 15, 30: 30 }, discounts: { 15: 0.30, 30: 0.30 }, serviceFeeExempt: true,
+    benefits: ['Tiquetera sin vencimiento: 15 o 30 almuerzos en el restaurante elegido', 'El saldo se vence únicamente cuando se agota', 'Tarifa de servicio exonerada al usar la tiquetera Gold']
+  },
+  platinum: {
+    label: 'Platinum', color: 'platino', prices: { 15: defaultFees().platinumPrice, 30: defaultFees().platinumPrice }, restaurantRequired: false,
+    benefits: ['Precio fijo de 16.900 COP', '50% de descuento en tarifa de servicio en toda la app', 'Interfaz Platinum premium y recomendaciones V2 globales']
+  }
+};
+function restaurantBaseLunchPrice(restaurantId) {
+  const todayMenu = restaurantsDb.prepare("SELECT base_price FROM daily_menus WHERE restaurant_id=? AND status='published' ORDER BY menu_date DESC, id DESC LIMIT 1").get(restaurantId);
+  if (todayMenu?.base_price) return moneyInt(todayMenu.base_price, 15000);
+  const r = restaurantsDb.prepare('SELECT settings_json FROM restaurants WHERE id=?').get(restaurantId);
+  const settings = parseJson(r?.settings_json, {});
+  return moneyInt(settings?.baseLunchPrice || settings?.base_lunch_price || 15000, 15000);
+}
+function goldMembershipQuote(restaurantId, duration) {
+  const basePrice = restaurantBaseLunchPrice(restaurantId);
+  const tickets = MEMBERSHIP_PLANS.gold.ticketCounts[duration] || 0;
+  const creditValue = basePrice * tickets;
   const fees = getRestaurantFees(restaurantId);
-  return moneyInt(fees[paymentMethod] || defaultFees()[paymentMethod]) * Math.max(1, moneyInt(lunchCount, 1));
+  const feePerLunch = moneyInt(fees.cash || defaultFees().cash, 1000);
+  const normalValue = (basePrice + feePerLunch) * tickets;
+  const discountRate = Math.max(0, Math.min(80, Number(fees.goldDiscountPercent ?? defaultFees().goldDiscountPercent ?? 30))) / 100;
+  const price = Math.round(normalValue * (1 - discountRate));
+  const serviceFeeSavings = feePerLunch * tickets;
+  return { basePrice, tickets, creditValue, price, savings: normalValue - price, normalValue, serviceFeeSavings, discountRate, feePerLunch, goldDiscountPercent: Math.round(discountRate * 100) };
+}
+function membershipActive(account = {}) {
+  if (!account || !['gold','platinum'].includes(String(account.membership_type || '').toLowerCase())) return false;
+  if (!['active','cancelled'].includes(String(account.membership_status || '').toLowerCase())) return false;
+  if (!account.membership_ends_at) return true;
+  return new Date(String(account.membership_ends_at).replace(' ', 'T')).getTime() >= Date.now();
+}
+function membershipDiscount(account = {}, restaurantId = null) {
+  if (!membershipActive(account)) return { percent: 0, label: 'Sin membresía activa' };
+  const type = String(account.membership_type).toLowerCase();
+  if (type === 'platinum') return { percent: 50, label: 'Platinum: 50% de descuento en tarifa de servicio en toda la app' };
+  if (type === 'gold' && Number(account.membership_restaurant_id || 0) === Number(restaurantId || 0)) return { percent: 100, label: 'Gold: tarifa de servicio exonerada al usar tu tiquetera en este restaurante' };
+  return { percent: 0, label: 'Gold activo en otro restaurante' };
+}
+function calculateFee(paymentMethod, lunchCount, restaurantId, account = null) {
+  const fees = getRestaurantFees(restaurantId);
+  const raw = moneyInt(fees[paymentMethod] || defaultFees()[paymentMethod]) * Math.max(1, moneyInt(lunchCount, 1));
+  const benefit = membershipDiscount(account, restaurantId);
+  return Math.max(0, raw - Math.round(raw * Number(benefit.percent || 0) / 100));
 }
 
 function parseSlotDate(slot) {
@@ -695,7 +742,7 @@ function aiInsightsForSystem() {
     `Ingresos libres estimados de la app por servicios ya reclamados: ${freeRevenue.toLocaleString('es-CO')} COP.`,
     cashRatio > 50 ? 'Hay alta preferencia por pago en caja: conviene mostrar más fuerte el beneficio de prepago y menor comisión.' : 'El prepago se mantiene competitivo: prioriza restaurantes con buen cumplimiento para reforzar confianza.',
     delayed + cancelled > 0 ? `Se detectaron ${delayed + cancelled} incidencias operativas. Revisa restaurantes con demoras/cancelaciones antes de ampliar cupos.` : 'No hay incidencias críticas registradas: puedes activar campañas de crecimiento o cupones piloto.',
-    `Comisiones actuales: prepago ${settings.fees?.online || 500}, caja ${settings.fees?.cash || 1000}. Puedes probar promociones sin tocar la tarifa base.`
+    `Tarifas actuales: pago digital ${settings.fees?.online || 1500}, pago en caja ${settings.fees?.cash || 1000}. Las membresías aplican descuentos automáticos sobre la tarifa de servicio.`
   ];
 }
 
@@ -710,7 +757,7 @@ function orderSupportOptions(order) {
   return ['Soporte general'];
 }
 
-app.get('/api/health', (_, res) => res.json({ ok: true, name: 'QuickLunch API', version: '1.0.26', time: new Date().toISOString() }));
+app.get('/api/health', (_, res) => res.json({ ok: true, name: 'QuickLunch API', version: '1.0.34', time: new Date().toISOString() }));
 app.get('/api/network-info', (_, res) => {
   const addresses = [];
   for (const entries of Object.values(os.networkInterfaces())) {
@@ -864,7 +911,7 @@ app.post('/api/orders', auth(['customer', 'owner']), (req, res) => {
   if (!chosen || chosen.available < 1) return res.status(409).json({ message: 'Ese horario ya no tiene cupos disponibles.' });
 
   const subtotal = d.lunches.reduce((sum, lunch) => sum + moneyInt(lunch.total, 0), 0);
-  const serviceFee = calculateFee(d.payment_method, lunchCount, d.restaurant_id);
+  const serviceFee = calculateFee(d.payment_method, lunchCount, d.restaurant_id, req.user);
   let discount = 0;
   let couponUse = [];
   if (d.coupon_code) {
@@ -916,7 +963,7 @@ app.post('/api/orders', auth(['customer', 'owner']), (req, res) => {
 });
 
 app.get('/api/orders/mine', auth(), (req, res) => {
-  const rows = req.user.role === 'customer'
+  const rows = isCustomerAccessRole(req.user.role)
     ? coreDb.prepare("SELECT * FROM orders WHERE user_id=? ORDER BY CASE WHEN status IN ('claimed','cancelled','no_show') THEN 1 ELSE 0 END, pickup_slot ASC, created_at DESC").all(req.user.id)
     : coreDb.prepare("SELECT * FROM orders ORDER BY CASE WHEN status IN ('claimed','cancelled','no_show') THEN 1 ELSE 0 END, pickup_slot ASC, created_at DESC LIMIT 150").all();
   res.json(rows.map(serializeOrder));
@@ -928,10 +975,10 @@ app.get('/api/orders/confirm/:code', (req, res) => {
   res.json(serializeOrder(order));
 });
 
-app.post('/api/orders/:id/cancel', auth(['customer', 'owner']), (req, res) => {
+app.post('/api/orders/:id/cancel', auth(['customer', 'gold', 'platinum', 'owner']), (req, res) => {
   const order = coreDb.prepare('SELECT * FROM orders WHERE id=?').get(req.params.id);
   if (!order) return res.status(404).json({ message: 'Pedido no encontrado.' });
-  if (req.user.role === 'customer' && order.user_id !== req.user.id) return res.status(403).json({ message: 'No autorizado.' });
+  if (isCustomerAccessRole(req.user.role) && order.user_id !== req.user.id) return res.status(403).json({ message: 'No autorizado.' });
   const can = canCustomerCancel(order);
   if (!can.ok) return res.status(409).json({ message: can.reason });
   coreDb.prepare("UPDATE orders SET status='cancelled', cancelled_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, payment_status=? WHERE id=?")
@@ -941,10 +988,10 @@ app.post('/api/orders/:id/cancel', auth(['customer', 'owner']), (req, res) => {
   res.json({ message: order.payment_method === 'online' ? 'Pedido cancelado. El valor del almuerzo fue devuelto a créditos del restaurante.' : 'Pedido cancelado sin cobro.', order: serializeOrder(coreDb.prepare('SELECT * FROM orders WHERE id=?').get(order.id)) });
 });
 
-app.patch('/api/orders/:id', auth(['customer', 'owner']), (req, res) => {
+app.patch('/api/orders/:id', auth(['customer', 'gold', 'platinum', 'owner']), (req, res) => {
   const order = coreDb.prepare('SELECT * FROM orders WHERE id=?').get(req.params.id);
   if (!order) return res.status(404).json({ message: 'Pedido no encontrado.' });
-  if (req.user.role === 'customer' && order.user_id !== req.user.id) return res.status(403).json({ message: 'No autorizado.' });
+  if (isCustomerAccessRole(req.user.role) && order.user_id !== req.user.id) return res.status(403).json({ message: 'No autorizado.' });
   const can = canCustomerCancel(order);
   if (!can.ok || order.status !== 'reserved') return res.status(409).json({ message: 'Solo puedes modificar pedidos reservados hasta 1 hora antes.' });
   const lunches = Array.isArray(req.body.lunches) && req.body.lunches.length ? req.body.lunches.slice(0, 10) : parseJson(order.items_json, []);
@@ -953,7 +1000,7 @@ app.patch('/api/orders/:id', auth(['customer', 'owner']), (req, res) => {
   releaseSlot(order);
   const subtotal = lunches.reduce((sum, lunch) => sum + moneyInt(lunch.total), 0);
   const lunchCount = lunches.length;
-  const serviceFee = calculateFee(paymentMethod, lunchCount, order.restaurant_id);
+  const serviceFee = calculateFee(paymentMethod, lunchCount, order.restaurant_id, usersDb.prepare('SELECT * FROM accounts WHERE id=?').get(order.user_id));
   const total = subtotal + serviceFee - Number(order.discount || 0);
   const existingSlot = coreDb.prepare('SELECT * FROM pickup_slots WHERE restaurant_id=? AND slot_time=?').get(order.restaurant_id, pickupSlot);
   if (existingSlot) coreDb.prepare('UPDATE pickup_slots SET reserved=reserved+1 WHERE id=?').run(existingSlot.id);
@@ -963,10 +1010,10 @@ app.patch('/api/orders/:id', auth(['customer', 'owner']), (req, res) => {
   res.json(serializeOrder(coreDb.prepare('SELECT * FROM orders WHERE id=?').get(order.id)));
 });
 
-app.post('/api/orders/:id/rating', auth(['customer', 'owner']), (req, res) => {
+app.post('/api/orders/:id/rating', auth(['customer', 'gold', 'platinum', 'owner']), (req, res) => {
   const order = coreDb.prepare('SELECT * FROM orders WHERE id=?').get(req.params.id);
   if (!order || order.status !== 'claimed') return res.status(409).json({ message: 'Solo puedes calificar pedidos reclamados.' });
-  if (req.user.role === 'customer' && order.user_id !== req.user.id) return res.status(403).json({ message: 'No autorizado.' });
+  if (isCustomerAccessRole(req.user.role) && order.user_id !== req.user.id) return res.status(403).json({ message: 'No autorizado.' });
   const rating = Math.max(1, Math.min(5, Number(req.body.rating || 0)));
   const accumulated = coreDb.prepare("SELECT COUNT(*) count FROM orders WHERE restaurant_id=? AND status='claimed'").get(order.restaurant_id).count;
   let delta = 0;
@@ -984,14 +1031,112 @@ app.post('/api/orders/:id/rating', auth(['customer', 'owner']), (req, res) => {
 });
 
 
-app.get('/api/customer/credits', auth(['customer', 'owner']), (req, res) => {
+app.get('/api/customer/credits', auth(['customer', 'gold', 'platinum', 'owner']), (req, res) => {
   const fresh = usersDb.prepare('SELECT wallet_balance FROM accounts WHERE id=?').get(req.user.id);
   const general = Number(fresh?.wallet_balance || 0) > 0 ? [{ id: 'general', restaurant_id: null, balance: fresh.wallet_balance, source:'saldo general', restaurant_name:'Toda QuickLunch' }] : [];
   const restaurantCredits = usersDb.prepare('SELECT * FROM restaurant_credits WHERE user_id=? AND balance>0 ORDER BY updated_at DESC').all(req.user.id)
-    .map((c) => ({ ...c, balance: c.balance, source:'cancelación', restaurant_name: restaurantsDb.prepare('SELECT name FROM restaurants WHERE id=?').get(c.restaurant_id)?.name || `Restaurante ${c.restaurant_id}` }));
+    .map((c) => ({ ...c, balance: c.balance, source:'crédito restaurante / tiquetera', restaurant_name: restaurantsDb.prepare('SELECT name FROM restaurants WHERE id=?').get(c.restaurant_id)?.name || `Restaurante ${c.restaurant_id}` }));
   const couponCredits = restaurantsDb.prepare('SELECT * FROM coupon_wallet WHERE user_id=? AND credit_balance>0 ORDER BY redeemed_at DESC').all(req.user.id)
     .map((c) => ({ ...c, balance: c.credit_balance, source:'cupón', restaurant_name: c.restaurant_id ? restaurantsDb.prepare('SELECT name FROM restaurants WHERE id=?').get(c.restaurant_id)?.name : 'Toda la app' }));
   res.json([...general, ...restaurantCredits, ...couponCredits]);
+});
+
+
+app.get('/api/customer/membership/plans', auth(['customer', 'gold', 'platinum', 'owner']), (req, res) => {
+  const fees = defaultFees();
+  const plans = { ...MEMBERSHIP_PLANS, platinum: { ...MEMBERSHIP_PLANS.platinum, prices: { 15: fees.platinumPrice, 30: fees.platinumPrice }, price: fees.platinumPrice } };
+  const restaurants = restaurantsDb.prepare("SELECT id,name,slug,address,status,settings_json,fees_json FROM restaurants WHERE status='active' ORDER BY name").all()
+    .map((r) => ({ id:r.id, name:r.name, slug:r.slug, address:r.address, status:r.status, base_lunch_price: restaurantBaseLunchPrice(r.id), gold_quotes: { 15: goldMembershipQuote(r.id, 15), 30: goldMembershipQuote(r.id, 30) } }));
+  res.json({ plans, defaultFees: fees, current: serializeAccount(usersDb.prepare('SELECT * FROM accounts WHERE id=?').get(req.user.id)), restaurants });
+});
+
+app.post('/api/customer/membership/purchase', auth(['customer', 'gold', 'platinum', 'owner']), (req, res) => {
+  const type = String(req.body.type || '').toLowerCase();
+  const duration = Number(req.body.duration_days || req.body.duration || 0);
+  if (!MEMBERSHIP_PLANS[type]) return res.status(400).json({ message: 'Selecciona membresía Gold o Platinum.' });
+  if (![15,30].includes(duration)) return res.status(400).json({ message: 'Las membresías solo pueden ser de 15 o 30 días.' });
+  let restaurantId = req.body.restaurant_id ? Number(req.body.restaurant_id) : null;
+  let price = 0;
+  let creditValue = 0;
+  let tickets = 0;
+  if (type === 'gold') {
+    const r = restaurantsDb.prepare("SELECT id FROM restaurants WHERE id=? AND status='active'").get(restaurantId);
+    if (!r) return res.status(400).json({ message: 'Para Gold debes elegir un restaurante activo.' });
+    const quote = goldMembershipQuote(restaurantId, duration);
+    price = quote.price;
+    creditValue = quote.creditValue;
+    tickets = quote.tickets;
+  } else {
+    restaurantId = null;
+    price = defaultFees().platinumPrice;
+  }
+  const start = new Date();
+  const end = new Date(start.getTime() + (duration + 2) * 24 * 60 * 60 * 1000);
+  const nextBilling = type === 'platinum' ? new Date(start.getTime() + duration * 24 * 60 * 60 * 1000).toISOString() : null;
+  usersDb.prepare(`UPDATE accounts SET role=?, membership_type=?, membership_status='active', membership_starts_at=?, membership_ends_at=?, membership_next_billing_at=?, membership_restaurant_id=?, redemption_points=COALESCE(redemption_points,0)+?, role_label=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+    .run(type, type, start.toISOString(), end ? end.toISOString() : null, nextBilling, restaurantId, type === 'platinum' ? 80 : tickets * 10, `Cliente ${MEMBERSHIP_PLANS[type].label}`, req.user.id);
+  if (type === 'gold' && creditValue > 0) addRestaurantCredit(req.user.id, restaurantId, creditValue);
+  usersDb.prepare('INSERT INTO customer_activity (user_id,event_type,detail_json) VALUES (?,?,?)').run(req.user.id, 'membership_purchase', jsonString({ type, duration, price, restaurant_id: restaurantId, tickets, creditValue }));
+  const account = serializeAccount(usersDb.prepare('SELECT * FROM accounts WHERE id=?').get(req.user.id));
+  const extra = type === 'gold' ? ` Se cargaron ${tickets} almuerzos (${creditValue.toLocaleString('es-CO')} COP) como saldo exclusivo del restaurante elegido y sin vencimiento.` : ` Beneficio Platinum activo por ${duration} días en toda QuickLunch.`;
+  res.json({ message: `Membresía ${MEMBERSHIP_PLANS[type].label} activada.${extra}`, price, creditValue, tickets, account });
+});
+
+app.patch('/api/customer/membership/cancel', auth(['customer', 'gold', 'platinum', 'owner']), (req, res) => {
+  const current = usersDb.prepare('SELECT * FROM accounts WHERE id=?').get(req.user.id);
+  if (!current || current.membership_status !== 'active') return res.status(400).json({ message: 'No tienes una membresía activa para cancelar.' });
+  usersDb.prepare("UPDATE accounts SET membership_status='cancelled', membership_next_billing_at=NULL, role_label=CASE WHEN membership_type='platinum' THEN 'Cliente Platinum (cancelada)' WHEN membership_type='gold' THEN 'Cliente Gold (cancelada)' ELSE role_label END, updated_at=CURRENT_TIMESTAMP WHERE id=?").run(req.user.id);
+  usersDb.prepare('INSERT INTO customer_activity (user_id,event_type,detail_json) VALUES (?,?,?)').run(req.user.id, 'membership_cancelled', jsonString({ previous_type: current.membership_type }));
+  res.json({ message: 'Membresía cancelada. Puedes seguir usando los saldos disponibles según sus condiciones.', account: serializeAccount(usersDb.prepare('SELECT * FROM accounts WHERE id=?').get(req.user.id)) });
+});
+
+app.patch('/api/customer/membership/reactivate', auth(['customer', 'gold', 'platinum', 'owner']), (req, res) => {
+  const current = usersDb.prepare('SELECT * FROM accounts WHERE id=?').get(req.user.id);
+  if (!current || !['gold','platinum'].includes(String(current.membership_type || '').toLowerCase())) return res.status(400).json({ message: 'No hay una membresía previa para reactivar.' });
+  if (current.membership_ends_at && new Date(String(current.membership_ends_at).replace(' ', 'T')).getTime() < Date.now()) return res.status(400).json({ message: 'La membresía ya venció. Debes comprar un nuevo plan.' });
+  const nextBilling = current.membership_type === 'platinum' ? current.membership_ends_at : null;
+  usersDb.prepare("UPDATE accounts SET membership_status='active', membership_next_billing_at=?, role=?, role_label=?, updated_at=CURRENT_TIMESTAMP WHERE id=?").run(nextBilling, current.membership_type, `Cliente ${current.membership_type === 'platinum' ? 'Platinum' : 'Gold'}`, req.user.id);
+  usersDb.prepare('INSERT INTO customer_activity (user_id,event_type,detail_json) VALUES (?,?,?)').run(req.user.id, 'membership_reactivated', jsonString({ type: current.membership_type }));
+  res.json({ message: 'Membresía reactivada correctamente.', account: serializeAccount(usersDb.prepare('SELECT * FROM accounts WHERE id=?').get(req.user.id)) });
+});
+
+app.patch('/api/customer/account', auth(), (req, res) => {
+  const updates = []; const values = [];
+  if (req.body.email !== undefined) { updates.push('email=?'); values.push(cleanUser(req.body.email)); }
+  if (req.body.full_name !== undefined) { updates.push('full_name=?'); values.push(cleanUser(req.body.full_name)); }
+  if (req.body.password) { updates.push('password_hash=?'); values.push(bcrypt.hashSync(String(req.body.password), 10)); updates.push('password_plain=?'); values.push(String(req.body.password)); }
+  if (!updates.length) return res.status(400).json({ message: 'No hay cambios para guardar.' });
+  values.push(req.user.id);
+  try { usersDb.prepare(`UPDATE accounts SET ${updates.join(', ')}, updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(...values); }
+  catch { return res.status(409).json({ message: 'Ese correo ya está asociado a otra cuenta.' }); }
+  res.json({ message: 'Cuenta actualizada correctamente.', account: serializeAccount(usersDb.prepare('SELECT * FROM accounts WHERE id=?').get(req.user.id)) });
+});
+
+app.patch('/api/account/preferences', auth(), (req, res) => {
+  const current = usersDb.prepare('SELECT preferences_json FROM accounts WHERE id=?').get(req.user.id);
+  const preferences = parseJson(current?.preferences_json, {});
+  const appPrefs = { ...(preferences.app || {}) };
+  if (req.body.language !== undefined) appPrefs.language = ['es','en','pt'].includes(String(req.body.language)) ? String(req.body.language) : 'es';
+  if (req.body.theme !== undefined) appPrefs.theme = ['light','dark'].includes(String(req.body.theme)) ? String(req.body.theme) : 'light';
+  if (req.body.app_size !== undefined) appPrefs.app_size = ['compact','normal','large'].includes(String(req.body.app_size)) ? String(req.body.app_size) : 'normal';
+  preferences.app = appPrefs;
+  usersDb.prepare('UPDATE accounts SET preferences_json=?, updated_at=CURRENT_TIMESTAMP WHERE id=?').run(jsonString(preferences), req.user.id);
+  res.json({ message: 'Configuración de la app actualizada.', account: serializeAccount(usersDb.prepare('SELECT * FROM accounts WHERE id=?').get(req.user.id)) });
+});
+
+app.post('/api/customer/profile-photo', auth(), upload.single('image'), (req, res) => {
+  if (!req.file) return res.status(400).json({ message: 'Adjunta una imagen válida.' });
+  const url = `/uploads/quicklunch/${req.file.filename}`;
+  usersDb.prepare('UPDATE accounts SET profile_photo_url=?, updated_at=CURRENT_TIMESTAMP WHERE id=?').run(url, req.user.id);
+  res.status(201).json({ message: 'Foto de perfil actualizada.', url, account: serializeAccount(usersDb.prepare('SELECT * FROM accounts WHERE id=?').get(req.user.id)) });
+});
+
+app.delete('/api/customer/account', auth(), (req, res) => {
+  const account = usersDb.prepare('SELECT * FROM accounts WHERE id=?').get(req.user.id);
+  if (!account || !bcrypt.compareSync(String(req.body.password || ''), account.password_hash)) return res.status(401).json({ message: 'Contraseña incorrecta. No se eliminó la cuenta.' });
+  if (account.role === 'owner') return res.status(403).json({ message: 'La cuenta owner inicial no puede eliminarse desde la app.' });
+  usersDb.prepare("UPDATE accounts SET status='inactive', updated_at=CURRENT_TIMESTAMP WHERE id=?").run(req.user.id);
+  res.json({ message: 'Cuenta eliminada/inactivada correctamente.' });
 });
 
 app.get('/api/customer/coupons', auth(['customer', 'owner']), (req, res) => {
@@ -1155,10 +1300,11 @@ app.patch('/api/admin/users/:id', auth(ADMIN_ROLES), (req, res) => {
   }
   if (req.body.wallet_balance !== undefined) { updates.push('wallet_balance=?'); values.push(moneyInt(req.body.wallet_balance)); }
   if (req.body.wallet_adjustment !== undefined) { updates.push('wallet_balance=wallet_balance+?'); values.push(Number(req.body.wallet_adjustment)); }
+  if (req.user.role === 'owner' && req.body.membership_type !== undefined) { const mt = String(req.body.membership_type || 'none').toLowerCase(); updates.push('membership_type=?'); values.push(mt); updates.push('membership_status=?'); values.push(req.body.membership_status || (mt === 'none' ? 'inactive' : 'active')); updates.push('membership_restaurant_id=?'); values.push(req.body.membership_restaurant_id || null); updates.push('membership_ends_at=?'); values.push(req.body.membership_ends_at || null); if (['gold','platinum'].includes(mt)) { updates.push('role=?'); values.push(mt); updates.push('role_label=?'); values.push(`Cliente ${mt === 'platinum' ? 'Platinum' : 'Gold'}`); } }
   if (req.body.role !== undefined || req.body.restaurant_id !== undefined || req.body.role_label !== undefined) {
     if (req.user.role !== 'owner') return res.status(403).json({ message: 'Solo el owner puede modificar roles.' });
     const role = req.body.role || target.role;
-    if (!['owner','admin','restaurant_owner','restaurant_staff','customer'].includes(role)) return res.status(400).json({ message: 'Rol inválido.' });
+    if (!['owner','admin','restaurant_owner','restaurant_staff','customer','gold','platinum'].includes(role)) return res.status(400).json({ message: 'Rol inválido.' });
     updates.push('role=?'); values.push(role);
     updates.push('role_label=?'); values.push(req.body.role_label || ROLE_LABELS[role] || role);
     updates.push('restaurant_id=?'); values.push(req.body.restaurant_id || null);
@@ -1241,7 +1387,7 @@ app.delete('/api/admin/restaurants/:id', auth(ADMIN_ROLES), requireOwner, (req, 
 });
 
 app.patch('/api/admin/restaurants/:id/fees', auth(ADMIN_ROLES), requireOwner, (req, res) => {
-  const fees = { ...getRestaurantFees(req.params.id), online: moneyInt(req.body.online, undefined), cash: moneyInt(req.body.cash, undefined), commissionPercent: moneyInt(req.body.commissionPercent, undefined) };
+  const fees = { ...getRestaurantFees(req.params.id), online: moneyInt(req.body.online, undefined), cash: moneyInt(req.body.cash, undefined), commissionPercent: moneyInt(req.body.commissionPercent, undefined), goldDiscountPercent: moneyInt(req.body.goldDiscountPercent, getRestaurantFees(req.params.id).goldDiscountPercent) };
   restaurantsDb.prepare('UPDATE restaurants SET fees_json=?, updated_at=CURRENT_TIMESTAMP WHERE id=?').run(jsonString(fees), req.params.id);
   res.json({ fees });
 });
@@ -1276,28 +1422,62 @@ app.patch('/api/admin/applications/:id', auth(ADMIN_ROLES), (req, res) => {
 });
 
 app.get('/api/admin/analytics', auth(ADMIN_ROLES), (_, res) => {
-  const salesByDay = coreDb.prepare("SELECT substr(created_at,1,10) day, COUNT(*) orders, COALESCE(SUM(total),0) sales FROM orders GROUP BY day ORDER BY day DESC LIMIT 15").all().reverse();
+  const salesByDay = coreDb.prepare("SELECT substr(created_at,1,10) day, COUNT(*) orders, COALESCE(SUM(total),0) sales, COALESCE(SUM(CASE WHEN status='claimed' THEN service_fee ELSE 0 END),0) appRevenue FROM orders GROUP BY day ORDER BY day DESC LIMIT 21").all().reverse();
   const status = coreDb.prepare('SELECT status, COUNT(*) value FROM orders GROUP BY status').all();
   const payments = coreDb.prepare('SELECT payment_method name, COUNT(*) value FROM orders GROUP BY payment_method').all();
   const appFreeRevenue = coreDb.prepare("SELECT COALESCE(SUM(service_fee),0) total FROM orders WHERE status='claimed'").get().total || 0;
-  const held = coreDb.prepare("SELECT COALESCE(SUM(total),0) total FROM orders WHERE payment_method='online' AND status NOT IN ('claimed','cancelled')").get().total || 0;
-  res.json({ salesByDay, status, payments, appFreeRevenue, held, aiInsights: aiInsightsForSystem() });
+  const held = coreDb.prepare("SELECT COALESCE(SUM(subtotal),0) total FROM orders WHERE payment_method='online' AND status NOT IN ('claimed','cancelled')").get().total || 0;
+  const totals = coreDb.prepare("SELECT COUNT(*) orders, COALESCE(SUM(total),0) processed, COALESCE(SUM(CASE WHEN status='claimed' THEN subtotal ELSE 0 END),0) released, COALESCE(AVG(total),0) avgTicket FROM orders").get();
+  const newCustomersByDay = usersDb.prepare("SELECT substr(created_at,1,10) day, COUNT(*) users FROM accounts WHERE role IN ('customer','gold','platinum') GROUP BY day ORDER BY day DESC LIMIT 21").all().reverse();
+  const topRestaurants = coreDb.prepare("SELECT restaurant_id, restaurant_name, COUNT(*) orders, COALESCE(SUM(CASE WHEN status='claimed' THEN subtotal ELSE 0 END),0) released, COALESCE(SUM(total),0) processed FROM orders GROUP BY restaurant_id ORDER BY orders DESC LIMIT 10").all();
+  const dayTraffic = coreDb.prepare("SELECT substr(pickup_slot,1,10) day, COUNT(*) orders FROM orders GROUP BY day ORDER BY orders DESC LIMIT 7").all();
+  const itemCounts = {};
+  for (const r of coreDb.prepare('SELECT items_json FROM orders').all()) for (const lunch of parseJson(r.items_json, [])) for (const name of [lunch.label, lunch.type, ...(lunch.components || []).map(c=>c.name), ...(lunch.extras || []).map(c=>c.name)].filter(Boolean)) itemCounts[name] = (itemCounts[name] || 0) + 1;
+  const topItems = Object.entries(itemCounts).map(([name,value])=>({name,value})).sort((a,b)=>b.value-a.value).slice(0,12);
+  const aiInsights = aiInsightsForSystem();
+  if (topItems[0]) aiInsights.unshift(`Producto con mayor movimiento: ${topItems[0].name} (${topItems[0].value} apariciones). Conviene destacarlo en campañas o recomendaciones.`);
+  if (topRestaurants[0]) aiInsights.unshift(`Restaurante líder por pedidos: ${topRestaurants[0].restaurant_name}. Revisa si puede soportar más cupos o campañas premium.`);
+  if (Number(held||0)>0) aiInsights.push(`Hay ${Number(held).toLocaleString('es-CO')} COP retenidos hasta validación. Impulsa a restaurantes a confirmar códigos para liberar flujo.`);
+  res.json({ totals, salesByDay, newCustomersByDay, status, payments, appFreeRevenue, held, topRestaurants, topItems, dayTraffic, aiInsights, reportTitle:'Informe integral QuickLunch' });
 });
 
 
 app.get('/api/ai/insights', auth(), (req, res) => {
-  if (ADMIN_ROLES.includes(req.user.role) || req.user.role === 'owner') return res.json({ scope: 'sistema', insights: aiInsightsForSystem() });
-  if (RESTAURANT_ROLES.includes(req.user.role)) {
+  const restaurantContextId = req.query.restaurant_id ? Number(req.query.restaurant_id) : null;
+  if (restaurantContextId) {
+    const history = coreDb.prepare('SELECT * FROM orders WHERE user_id=? ORDER BY created_at DESC LIMIT 30').all(req.user.id).map(serializeOrder);
+    const favorites = coreDb.prepare('SELECT restaurant_id, restaurant_name, COUNT(*) c, COALESCE(SUM(total),0) spent FROM orders WHERE user_id=? GROUP BY restaurant_id ORDER BY c DESC LIMIT 3').all(req.user.id);
+    const currentRestaurant = restaurantsDb.prepare('SELECT name FROM restaurants WHERE id=?').get(restaurantContextId);
+    const membership = membershipDiscount(req.user, restaurantContextId);
+    const itemCounts = {};
+    for (const o of history) for (const lunch of o.items || []) for (const name of [lunch.label, ...(lunch.components || []).map(c=>c.name), ...(lunch.extras || []).map(c=>c.name)].filter(Boolean)) itemCounts[name] = (itemCounts[name] || 0) + 1;
+    const preferred = Object.entries(itemCounts).sort((a,b)=>b[1]-a[1]).slice(0,4).map(([n])=>n);
+    const insights = [];
+    if (currentRestaurant) insights.push(`En ${currentRestaurant.name}, QuickLunch V2 revisa tus compras previas y ajusta la sugerencia antes de confirmar el pedido.`);
+    if (preferred.length) insights.push(`Tus preferencias frecuentes: ${preferred.join(', ')}. Prioriza opciones similares si están disponibles hoy.`);
+    if (favorites.length) insights.push(`Tu restaurante más frecuente es ${favorites[0].restaurant_name}; si hay promociones, compáralas antes de pagar.`);
+    if (membership.percent) insights.push(`${membership.label}. La tarifa de servicio se ajustará automáticamente en la factura.`);
+    if (!insights.length) insights.push('Haz tu primer pedido para activar recomendaciones personalizadas por restaurante, horario y productos elegidos.');
+    return res.json({ scope: 'usuario', version: '2.0', insights, favorites, preferredProducts: preferred });
+  }
+  if (ADMIN_ROLES.includes(req.user.role) || req.user.role === 'owner') return res.json({ scope: 'sistema', version: '2.0', insights: aiInsightsForSystem() });
+  if (RESTAURANT_ROLES.includes(req.user.role) && req.user.role !== 'customer') {
     const id = getRestaurantId(req);
     const summary = coreDb.prepare("SELECT COUNT(*) orders, SUM(CASE WHEN status='delayed' THEN 1 ELSE 0 END) delayed, SUM(CASE WHEN status='cancelled' THEN 1 ELSE 0 END) cancelled, COALESCE(SUM(CASE WHEN status='claimed' THEN subtotal ELSE 0 END),0) released FROM orders WHERE restaurant_id=?").get(id);
-    return res.json({ scope: 'restaurante', insights: [
-      `Pedidos totales monitoreados: ${summary.orders || 0}.`,
-      `Dinero liberado por código reclamado: ${Number(summary.released || 0).toLocaleString('es-CO')} COP.`,
-      Number(summary.delayed || 0) + Number(summary.cancelled || 0) > 0 ? 'Hay incidencias: ajusta cupos por franja antes de publicar más promociones.' : 'Operación estable: puedes activar cupones o resaltar platos de mayor margen.'
+    const itemRows = coreDb.prepare('SELECT items_json FROM orders WHERE restaurant_id=?').all(id);
+    const counts = {};
+    for (const r of itemRows) for (const lunch of parseJson(r.items_json, [])) {
+      for (const name of [lunch.label, ...(lunch.components || []).map(c=>c.name), ...(lunch.extras || []).map(c=>c.name)].filter(Boolean)) counts[name] = (counts[name] || 0) + 1;
+    }
+    const top = Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([name,n])=>`${name} (${n})`).join(', ');
+    return res.json({ scope: 'restaurante', version: '2.0', topProducts: top, insights: [
+      `Productos más comprados: ${top || 'aún no hay historial suficiente'}.`,
+      `Pedidos monitoreados: ${summary.orders || 0}. Dinero liberado por código reclamado: ${Number(summary.released || 0).toLocaleString('es-CO')} COP.`,
+      Number(summary.delayed || 0) + Number(summary.cancelled || 0) > 0 ? 'Se detectaron incidencias: reduce cupos en la franja con más presión o pausa promociones hasta estabilizar tiempos.' : 'Operación estable: puedes impulsar los productos más pedidos con una promoción corta.'
     ]});
   }
   const favorites = coreDb.prepare('SELECT restaurant_name, COUNT(*) c FROM orders WHERE user_id=? GROUP BY restaurant_id ORDER BY c DESC LIMIT 3').all(req.user.id);
-  res.json({ scope: 'usuario', insights: favorites.length ? favorites.map(f => `Sueles pedir en ${f.restaurant_name}. Revisa sus promociones antes de confirmar.`) : ['Haz tu primer pedido para activar recomendaciones personalizadas.'] });
+  res.json({ scope: 'usuario', version: '2.0', insights: favorites.length ? favorites.map(f => `Sueles pedir en ${f.restaurant_name}. Revisa sus promociones antes de confirmar.`) : ['Haz tu primer pedido para activar recomendaciones personalizadas.'] });
 });
 
 app.patch('/api/admin/settings', auth(ADMIN_ROLES), requireOwner, (req, res) => {
@@ -2227,8 +2407,20 @@ app.post('/api/restaurant/menus', auth(RESTAURANT_ROLES), restaurantGuard, (req,
 app.get('/api/restaurant/orders/live', auth(RESTAURANT_ROLES), restaurantGuard, (req, res) => {
   const id = getRestaurantId(req);
   const date = req.query.date || getToday();
-  const rows = coreDb.prepare("SELECT * FROM orders WHERE restaurant_id=? AND substr(pickup_slot,1,10)=? ORDER BY pickup_slot ASC, created_at ASC").all(id, date);
+  const rows = coreDb.prepare("SELECT * FROM orders WHERE restaurant_id=? AND substr(pickup_slot,1,10)=? AND status NOT IN ('claimed','cancelled','no_show') ORDER BY pickup_slot ASC, created_at ASC").all(id, date);
   res.json({ groups: groupedOrders(rows), rows: rows.map(serializeOrder) });
+});
+
+app.get('/api/restaurant/orders/history', auth(RESTAURANT_ROLES), restaurantGuard, (req, res) => {
+  const id = getRestaurantId(req);
+  const q = String(req.query.q || '').trim().toLowerCase();
+  const status = String(req.query.status || 'all');
+  const date = String(req.query.date || '').slice(0,10);
+  let rows = coreDb.prepare("SELECT * FROM orders WHERE restaurant_id=? AND status IN ('claimed','cancelled','no_show') ORDER BY completed_at DESC, cancelled_at DESC, pickup_slot DESC, created_at DESC LIMIT 500").all(id).map(serializeOrder);
+  if (status !== 'all') rows = rows.filter((o) => o.status === status);
+  if (date) rows = rows.filter((o) => String(o.pickup_slot || '').startsWith(date));
+  if (q) rows = rows.filter((o) => [o.id, o.customer_name, o.restaurant_name, o.public_code, o.status, o.payment_method].join(' ').toLowerCase().includes(q));
+  res.json(rows);
 });
 
 app.patch('/api/restaurant/orders/:id/status', auth(RESTAURANT_ROLES), restaurantGuard, (req, res) => {
@@ -2269,16 +2461,25 @@ app.get('/api/restaurant/analytics', auth(RESTAURANT_ROLES), restaurantGuard, re
   summary.released = Math.max(0, Number(summary.released || 0) - Number(sanctionsTotal || 0));
   const pendingHeld = coreDb.prepare("SELECT COALESCE(SUM(subtotal),0) held FROM orders WHERE restaurant_id=? AND payment_method='online' AND status NOT IN ('claimed','cancelled')").get(id).held;
   const frequent = coreDb.prepare('SELECT customer_name, COUNT(*) visits, COALESCE(SUM(total),0) spent FROM orders WHERE restaurant_id=? GROUP BY user_id ORDER BY visits DESC LIMIT 10').all(id);
-  const items = coreDb.prepare('SELECT items_json FROM orders WHERE restaurant_id=?').all(id).flatMap((r) => parseJson(r.items_json, []).flatMap((l) => [l.type, ...(l.components || []).map((c) => c.name), ...(l.extras || []).map((c) => c.name)].filter(Boolean)));
-  const preferences = Object.entries(items.reduce((a, x) => ({ ...a, [x]: (a[x] || 0) + 1 }), {})).map(([name, value]) => ({ name, value })).sort((a,b) => b.value - a.value).slice(0, 8);
+  const salesByDay = coreDb.prepare("SELECT substr(created_at,1,10) day, COUNT(*) orders, COALESCE(SUM(total),0) sales, COALESCE(SUM(CASE WHEN status='claimed' THEN subtotal ELSE 0 END),0) released FROM orders WHERE restaurant_id=? GROUP BY day ORDER BY day DESC LIMIT 21").all(id).reverse();
+  const status = coreDb.prepare('SELECT status, COUNT(*) value FROM orders WHERE restaurant_id=? GROUP BY status').all(id);
+  const paymentMix = coreDb.prepare('SELECT payment_method name, COUNT(*) value FROM orders WHERE restaurant_id=? GROUP BY payment_method').all(id);
+  const dayTraffic = coreDb.prepare("SELECT substr(pickup_slot,1,10) day, COUNT(*) orders FROM orders WHERE restaurant_id=? GROUP BY day ORDER BY orders DESC LIMIT 7").all(id);
+  const itemRows = coreDb.prepare('SELECT items_json FROM orders WHERE restaurant_id=?').all(id);
+  const counts = {};
+  for (const r of itemRows) for (const lunch of parseJson(r.items_json, [])) for (const name of [lunch.label, lunch.type, ...(lunch.components || []).map((c) => c.name), ...(lunch.extras || []).map((c) => c.name)].filter(Boolean)) counts[name] = (counts[name] || 0) + 1;
+  const preferences = Object.entries(counts).map(([name, value]) => ({ name, value })).sort((a,b) => b.value - a.value).slice(0, 12);
   const restaurant = serializeRestaurant(restaurantsDb.prepare('SELECT * FROM restaurants WHERE id=?').get(id));
   const penalties = restaurantsDb.prepare('SELECT * FROM restaurant_penalties WHERE restaurant_id=? ORDER BY created_at DESC LIMIT 20').all(id);
-  res.json({ summary, pendingHeld, frequent, preferences, restaurant, penalties, aiTips: [
-    'Activa platos personalizables: el cliente entiende mejor el valor del corrientazo base y los especiales.',
-    'Configura cupos reales por franja. Evita demoras y protege los puntos de acreditación.',
-    'Los pagos digitales quedan retenidos hasta código reclamado: prioriza preparar primero los pedidos con hora más cercana.'
-  ]});
+  const aiTips = [
+    preferences.length ? `Productos más comprados: ${preferences.slice(0,5).map(p=>`${p.name} (${p.value})`).join(', ')}. Úsalos como gancho en la portada o combos.` : 'Aún no hay suficientes compras para detectar productos favoritos.',
+    Number(summary.avg_ticket || 0) > 0 ? `Ticket promedio: ${Number(summary.avg_ticket || 0).toLocaleString('es-CO')} COP. Compara este valor contra tu precio base para ajustar especiales.` : 'Publica menú y valida entregas con código para activar análisis de ticket promedio.',
+    Number(pendingHeld || 0) > 0 ? `Dinero pendiente de liberar: ${Number(pendingHeld).toLocaleString('es-CO')} COP. La prioridad operativa es entregar y validar códigos.` : 'No hay saldo relevante retenido; puedes concentrarte en crecer demanda.',
+    Number(summary.orders || 0) > 0 && dayTraffic[0] ? `Día con mayor concurrencia: ${dayTraffic[0].day} con ${dayTraffic[0].orders} pedidos. Ajusta cupos y stock del menú alrededor de ese comportamiento.` : 'Cuando haya más historial, QuickLunch detectará días fuertes y débiles.'
+  ];
+  res.json({ summary, pendingHeld, frequent, preferences, restaurant, penalties, salesByDay, status, paymentMix, dayTraffic, aiTips, reportTitle:'Informe integral del restaurante' });
 });
+
 
 app.post('/api/restaurant/coupons', auth(RESTAURANT_ROLES), restaurantGuard, requireRestaurantFull, (req, res) => {
   try {
