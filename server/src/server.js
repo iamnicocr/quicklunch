@@ -782,13 +782,13 @@ app.post('/api/auth/login', (req, res) => {
 });
 
 app.post('/api/auth/register', (req, res) => {
-  const schema = z.object({ full_name: z.string().min(3), username: z.string().min(3), email: z.string().email(), phone: z.string().optional(), password: z.string().min(6), consent_analytics: z.boolean().default(false) });
+  const schema = z.object({ full_name: z.string().min(3), username: z.string().min(3), email: z.string().email().optional(), phone: z.string().optional(), password: z.string().min(6), consent_analytics: z.boolean().default(false) });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ message: 'Revisa los datos del registro.' });
   const d = parsed.data;
   try {
     const info = usersDb.prepare(`INSERT INTO accounts (username,email,phone,password_hash,password_plain,role,role_label,full_name,consent_analytics,city,preferences_json) VALUES (?,?,?,?,?,?,?,?,?, 'Cali', '{}')`)
-      .run(d.username, d.email, d.phone || '', bcrypt.hashSync(d.password, 10), d.password, 'customer', ROLE_LABELS.customer, d.full_name, d.consent_analytics ? 1 : 0);
+      .run(d.username, d.email || `${d.username}@quicklunch.com`, d.phone || '3000000000', bcrypt.hashSync(d.password, 10), d.password, 'customer', ROLE_LABELS.customer, d.full_name, d.consent_analytics ? 1 : 0);
     const account = usersDb.prepare('SELECT * FROM accounts WHERE id=?').get(info.lastInsertRowid);
     res.status(201).json({ token: sign(account), account: serializeAccount(account) });
   } catch {
@@ -1249,7 +1249,7 @@ app.post('/api/admin/users', auth(ADMIN_ROLES), (req, res) => {
   const schema = z.object({
     full_name: z.string().min(3),
     username: z.string().min(3),
-    email: z.string().email(),
+    email: z.string().email().optional(),
     phone: z.string().optional(),
     password: z.string().min(6),
     role: z.enum(['owner','admin','restaurant_owner','restaurant_staff','customer']).default('customer'),
@@ -1266,7 +1266,7 @@ app.post('/api/admin/users', auth(ADMIN_ROLES), (req, res) => {
   const restaurantId = d.restaurant_id ? Number(d.restaurant_id) : null;
   if (['restaurant_owner','restaurant_staff'].includes(d.role) && restaurantId && !restaurantsDb.prepare('SELECT id FROM restaurants WHERE id=?').get(restaurantId)) return res.status(404).json({ message: 'El restaurante asociado no existe.' });
   const info = usersDb.prepare(`INSERT INTO accounts (username,email,phone,password_hash,password_plain,role,role_label,status,city,full_name,restaurant_id,consent_analytics,wallet_balance,preferences_json,permissions_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .run(d.username, d.email, d.phone || '', bcrypt.hashSync(d.password, 10), d.password, d.role, d.role_label || ROLE_LABELS[d.role] || d.role, d.status, 'Cali', d.full_name, restaurantId, d.role === 'customer' ? 1 : 0, moneyInt(d.wallet_balance, 0), '{}', '{}');
+    .run(d.username, d.email || `${d.username}@quicklunch.com`, d.phone || '3000000000', bcrypt.hashSync(d.password, 10), d.password, d.role, d.role_label || ROLE_LABELS[d.role] || d.role, d.status, 'Cali', d.full_name, restaurantId, d.role === 'customer' ? 1 : 0, moneyInt(d.wallet_balance, 0), '{}', '{}');
   res.status(201).json(serializeAccount(usersDb.prepare('SELECT * FROM accounts WHERE id=?').get(info.lastInsertRowid)));
 });
 
@@ -2275,7 +2275,7 @@ app.post('/api/restaurant/staff', auth(RESTAURANT_ROLES), restaurantGuard, requi
   if (usersDb.prepare('SELECT id FROM accounts WHERE lower(username)=lower(?) OR lower(email)=lower(?)').get(username, email)) return res.status(409).json({ message: 'Ese usuario o correo ya existe.' });
   try {
     const info = usersDb.prepare(`INSERT INTO accounts (username,email,password_hash,password_plain,role,role_label,status,city,full_name,phone,restaurant_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
-      .run(username, email, bcrypt.hashSync(req.body.password || 'quick2026', 10), req.body.password || 'quick2026', role, req.body.role_label || (role === 'restaurant_owner' ? 'Dueño asociado' : 'Cajero / Operador de reservas'), 'active', 'Cali', req.body.full_name || username, req.body.phone || '', id);
+      .run(username, email || `${username}@quicklunch.com`, bcrypt.hashSync(req.body.password || 'quick2026', 10), req.body.password || 'quick2026', role, req.body.role_label || (role === 'restaurant_owner' ? 'Dueño asociado' : 'Cajero / Operador de reservas'), 'active', 'Cali', req.body.full_name || username, req.body.phone || '3000000000', id);
     res.status(201).json({ message: 'Colaborador creado.', user: serializeAccount(usersDb.prepare('SELECT * FROM accounts WHERE id=?').get(info.lastInsertRowid)) });
   } catch (err) {
     res.status(409).json({ message: 'No se pudo crear colaborador.', detail: err.message });

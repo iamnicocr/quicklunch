@@ -578,3 +578,51 @@ git push origin main
 ```
 
 Después de hacer push, Vercel redeploya automáticamente.
+
+---
+
+# Despliegue público recomendado
+
+Para que QuickLunch quede accesible desde cualquier red, usa:
+
+- **Vercel** para el frontend.
+- **Render** para el backend Express.
+
+Lee la guía completa incluida en:
+
+```txt
+GUIA_DESPLIEGUE_PUBLICO.md
+```
+
+Configuración rápida de Vercel:
+
+```txt
+Root Directory: ./
+Build Command: npm run vercel-build
+Output Directory: client/dist
+Install Command: npm install && npm run install:all
+```
+
+Variable obligatoria en Vercel:
+
+```env
+VITE_API_URL=https://TU-BACKEND.onrender.com/api
+```
+
+Configuración rápida de Render:
+
+```txt
+Root Directory: server
+Build Command: npm install
+Start Command: npm start
+```
+
+Variables recomendadas en Render:
+
+```env
+NODE_ENV=production
+PORT=10000
+JWT_SECRET=cambia_este_secreto_quicklunch_2026
+CLIENT_ORIGINS=https://TU-PROYECTO.vercel.app
+CLIENT_ORIGIN=https://TU-PROYECTO.vercel.app
+```
