@@ -4,3 +4,9 @@ server/data/*.db
 server/data/*.db-journal
 client/dist
 .DS_Store
+.npmrc
+client/.npmrc
+server/.npmrc
+node_modules
+client/node_modules
+server/node_modules
