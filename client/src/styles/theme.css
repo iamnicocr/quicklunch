@@ -478,3 +478,17 @@ html[data-theme="dark"] .suggestion,
 html[data-theme="dark"] .suggestion span,
 html[data-theme="dark"] .suggestion small{background:#182325!important;color:#f8f3ea!important;border-color:rgba(255,255,255,.14)!important;}
 html[data-theme="dark"] .help-msg{background:#1a2435!important;color:#dbeafe!important;border-color:#3b82f6!important;}
+
+/* v137 feria + logo oficial en silueta blanca */
+.logo{display:inline-flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#ff7a1a,#241008)!important;border-radius:22px;padding:7px 11px;box-shadow:0 14px 32px rgba(255,122,26,.22), inset 0 1px 0 rgba(255,255,255,.22);border:1px solid rgba(255,255,255,.18);min-width:0;width:max-content;}
+.logo .official-logo,.ql-logo-img{height:54px!important;width:auto!important;max-width:112px!important;object-fit:contain;background:transparent!important;border:0!important;box-shadow:none!important;filter:drop-shadow(0 5px 12px rgba(0,0,0,.28))!important;padding:0!important;border-radius:0!important;}
+.sidebar .logo{background:linear-gradient(135deg,#ff8a1c,#3b1707)!important;}
+.mobile-head .logo{padding:5px 8px;border-radius:18px;}
+.mobile-head .logo .official-logo{height:40px!important;max-width:86px!important;}
+.login-card .logo{margin-inline:auto;border-radius:28px;padding:12px 16px;}
+.login-card .logo .official-logo{height:92px!important;max-width:150px!important;}
+.premium-logo-lockup{justify-content:flex-start!important;align-items:center!important;text-align:left!important;margin-left:0!important;padding-left:0!important;}
+.premium-logo-lockup .logo{flex:0 0 auto;margin-left:0!important;transform:none!important;}
+.premium-logo-lockup .logo .official-logo{height:68px!important;max-width:118px!important;}
+.membership-hero{display:block;}
+@media(max-width:560px){.premium-logo-lockup{grid-template-columns:auto 1fr!important;display:grid!important;align-items:center!important}.login-card .logo .official-logo{height:78px!important}.logo .official-logo{height:44px!important;max-width:94px!important}.mobile-head .logo .official-logo{height:36px!important;max-width:78px!important}}

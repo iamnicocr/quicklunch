@@ -1,6 +1,6 @@
 {
   "name": "quicklunch-web-module",
-  "version": "1.0.35",
+  "version": "1.0.37",
   "private": true,
   "description": "Modulo web formal de QuickLunch: admin, restaurantes y usuario movil.",
   "scripts": {
@@ -10,6 +10,7 @@
     "dev:client": "npm run dev --prefix client",
     "build": "npm run build --prefix client",
     "start": "npm start --prefix server",
-    "reset-db": "node server/src/reset-db.js"
+    "reset-db": "node server/src/reset-db.js",
+    "vercel-build": "npm install --prefix client --registry=https://registry.npmjs.org/ && npm run build --prefix client"
   }
 }

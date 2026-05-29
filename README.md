@@ -531,3 +531,50 @@ npm run dev
 - Se muestran almuerzos Gold restantes con base en el saldo de tiquetera del restaurante elegido.
 - Se permite reactivar membresía cancelada desde Membresía y desde Cuenta > Membresía.
 
+
+## Publicación en Vercel mediante GitHub
+
+Esta versión incluye `vercel.json` para publicar el frontend de QuickLunch desde el repositorio.
+
+### Opción rápida para feria
+
+1. Sube este proyecto completo a GitHub.
+2. Entra a Vercel y selecciona **Add New Project**.
+3. Importa el repositorio de GitHub.
+4. Deja el proyecto con la configuración incluida por el repositorio:
+   - Build Command: `npm run vercel-build`
+   - Output Directory: `client/dist`
+5. En **Environment Variables**, agrega:
+
+```env
+VITE_API_URL=https://tu-backend-publico.com/api
+```
+
+Si todavía no tienes backend público, puedes seguir usando el modo local para la feria con tu PC como servidor y abrir desde otros dispositivos de la misma red usando `http://TU-IP:5173/home`.
+
+### Backend y datos
+
+El frontend en Vercel necesita una API pública para login, usuarios, restaurantes, pedidos, códigos, soporte, imágenes y base de datos. Para una demo funcional rápida tienes dos alternativas:
+
+- **Feria/local:** correr `npm run dev` en tu PC y usar la IP local en la misma red WiFi.
+- **Producción real:** publicar el backend en un servicio que mantenga servidor y base de datos persistente, como Render, Railway, Fly.io o un VPS, y poner esa URL en `VITE_API_URL`.
+
+La base SQLite local sirve para prototipo y feria. Para producción real con múltiples usuarios persistentes se recomienda migrar a PostgreSQL/Supabase/Neon.
+
+### Comandos locales
+
+```powershell
+npm install
+npm run install:all
+npm run dev
+```
+
+### Comandos de publicación
+
+```powershell
+git add .
+git commit -m "QuickLunch feria v1.0.37"
+git push origin main
+```
+
+Después de hacer push, Vercel redeploya automáticamente.
